@@ -1,6 +1,6 @@
 [package]
 name = "terma"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 description = "Terminal Manga Viewer - A terminal-based manga/comic reader with image display support (Rust port)"
 authors = ["radiconkid"]
