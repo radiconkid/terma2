@@ -85,7 +85,6 @@ impl SixelRenderer {
             .args([
                 "-f",
                 fmt,
-                "--stretch",
                 "--size",
                 &format!("{}x{}", cols, rows),
                 "--symbols",
