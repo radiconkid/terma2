@@ -279,6 +279,9 @@ impl SixelRenderer {
     }
 
     /// Display a spread (two pages side by side).
+    ///
+    /// When both images are available, they are combined into a single image
+    /// with no gap, then displayed as one.
     pub fn display_spread(
         &self,
         img_right: &Path,
@@ -286,86 +289,65 @@ impl SixelRenderer {
         term_width: usize,
         term_height: usize,
     ) {
-        let mut stdout = std::io::stdout();
-        let _ = write!(stdout, "\x1b[H");
-        let _ = stdout.flush();
-
         let max_h = std::cmp::max(1, term_height.saturating_sub(2));
         let cell_ratio = crate::image::get_cell_aspect_ratio();
 
-        // Calculate dimensions for each page
-        let left_aspect = crate::image::get_image_aspect(img_right);
-        let right_aspect = img_left.map(crate::image::get_image_aspect).unwrap_or(0.0);
+        // If both images are available, combine them into a single image
+        if let Some(left_path) = img_left {
+            if let Some(combined_png) = crate::image::combine_images_side_by_side(img_right, left_path)
+            {
+                // Write combined PNG to a temp file
+                let temp_dir = tempfile::TempDir::with_prefix("terma_spread_").ok();
+                let temp_path = if let Some(ref dir) = temp_dir {
+                    let path = dir.path().join("spread.png");
+                    let _ = std::fs::write(&path, &combined_png);
+                    Some(path)
+                } else {
+                    None
+                };
 
-        // Each page gets half the width
-        let half_cols = std::cmp::max(1, term_width / 2);
+                if let Some(ref combined_path) = temp_path {
+                    // Calculate display dimensions for the combined image
+                    let aspect = crate::image::get_image_aspect(combined_path);
+                    let mut display_cols =
+                        std::cmp::max(1, (max_h as f64 * aspect * cell_ratio) as usize);
+                    let mut img_height = max_h;
 
-        // Calculate heights based on each page's aspect ratio
-        let left_height =
-            std::cmp::max(1, (half_cols as f64 / (left_aspect * cell_ratio)) as usize);
-        let right_height = if img_left.is_some() {
-            std::cmp::max(1, (half_cols as f64 / (right_aspect * cell_ratio)) as usize)
-        } else {
-            0
-        };
+                    if display_cols > term_width.saturating_sub(2) {
+                        let scale = (term_width.saturating_sub(2)) as f64 / display_cols as f64;
+                        display_cols = term_width.saturating_sub(2);
+                        img_height = std::cmp::max(1, (img_height as f64 * scale) as usize);
+                    }
 
-        // Use the taller of the two
-        let img_height = std::cmp::max(left_height, right_height);
+                    let mut stdout = std::io::stdout();
+                    let _ = write!(stdout, "\x1b[H");
+                    let _ = stdout.flush();
 
-        // Scale down if too tall
-        let (display_cols, display_height) = if img_height > max_h {
-            let scale = max_h as f64 / img_height as f64;
-            let scaled_cols = std::cmp::max(1, (half_cols as f64 * scale) as usize);
-            (scaled_cols * 2, max_h)
-        } else {
-            (half_cols * 2, img_height)
-        };
+                    if self.use_chafa {
+                        if let Some(data) = self.sixel_convert(combined_path, display_cols, img_height)
+                        {
+                            self.center_cursor(display_cols, term_width);
+                            self.output_sixel(&data);
+                        } else if self.is_kitty || self.is_wezterm {
+                            self.fallback_display(combined_path, display_cols, img_height);
+                        }
+                    } else if self.is_kitty || self.is_wezterm {
+                        self.fallback_display(combined_path, display_cols, img_height);
+                    } else if let Some(data) =
+                        self.sixel_convert(combined_path, display_cols, img_height)
+                    {
+                        self.center_cursor(display_cols, term_width);
+                        self.output_sixel(&data);
+                    }
 
-        // Display left page
-        let left_cols = display_cols / 2;
-
-        // Calculate centering offset
-        let offset = if display_cols < term_width {
-            (term_width - display_cols) / 2
-        } else {
-            0
-        };
-
-        // Center the spread horizontally
-        if offset > 0 {
-            let _ = write!(stdout, "\x1b[1;{}H", offset + 1);
-            let _ = stdout.flush();
-        }
-        if self.use_chafa {
-            if let Some(data) = self.sixel_convert(img_right, left_cols, display_height) {
-                self.output_sixel(&data);
-            } else if self.is_kitty || self.is_wezterm {
-                self.fallback_display(img_right, left_cols, display_height);
-            }
-        } else if self.is_kitty || self.is_wezterm {
-            self.fallback_display(img_right, left_cols, display_height);
-        } else if let Some(data) = self.sixel_convert(img_right, left_cols, display_height) {
-            self.output_sixel(&data);
-        }
-
-        // Display right page (if any) - move cursor to the right first
-        if let Some(right_path) = img_left {
-            let right_cols = display_cols - left_cols;
-            // Move cursor to the right side of the screen for the second image
-            let _ = write!(stdout, "\x1b[1;{}H", offset + left_cols + 1);
-            let _ = stdout.flush();
-            if self.use_chafa {
-                if let Some(data) = self.sixel_convert(right_path, right_cols, display_height) {
-                    self.output_sixel(&data);
-                } else if self.is_kitty || self.is_wezterm {
-                    self.fallback_display(right_path, right_cols, display_height);
+                    // Temp dir is dropped here, cleaning up the temp file
+                    return;
                 }
-            } else if self.is_kitty || self.is_wezterm {
-                self.fallback_display(right_path, right_cols, display_height);
-            } else if let Some(data) = self.sixel_convert(right_path, right_cols, display_height) {
-                self.output_sixel(&data);
             }
         }
+
+        // Fallback: display just the right image as single
+        self.display_single(img_right, term_width, term_height);
     }
 }
 
