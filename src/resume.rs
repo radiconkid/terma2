@@ -84,6 +84,7 @@ pub fn get_resume_state(resume_key: &str) -> Option<ResumeState> {
 }
 
 /// Save the current state for a specific key.
+#[allow(clippy::too_many_arguments)]
 pub fn save_resume_state(
     resume_key: &str,
     target_dir: &Path,

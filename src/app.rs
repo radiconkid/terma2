@@ -151,7 +151,7 @@ fn run_app(
     let mut reading_mode = true;
     let mut force_single = false;
 
-    if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
+    if let Some(state) = resume_key.and_then(resume::get_resume_state) {
         cover_mode = state.cover_mode;
         reading_mode = state.reading_mode;
     }
@@ -171,7 +171,7 @@ fn run_app(
     );
 
     // Try to find resume directory (restores last viewed chapter and page)
-    if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
+    if let Some(state) = resume_key.and_then(resume::get_resume_state) {
         debug_log!(
             "Resume: state loaded: dir_path={:?}, image_name={:?}, image_index={}",
             state.dir_path,

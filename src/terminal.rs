@@ -236,7 +236,7 @@ pub fn draw_status(lines: usize, cols: usize, text: &str, offset: usize) -> io::
     } else {
         1
     };
-    let max_width = if cols >= 2 { cols - 2 } else { 0 };
+    let max_width = cols.saturating_sub(2);
     let truncated = truncate_by_width(text, max_width);
     let mut stdout = io::stdout();
     write!(

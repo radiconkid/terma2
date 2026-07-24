@@ -58,7 +58,7 @@ fn kanji_numeral_to_int(s: &str) -> Option<u64> {
     }
 
     // Check if all characters are kanji numerals
-    if !s.chars().all(|c| is_kanji_numeral_char(c)) {
+    if !s.chars().all(is_kanji_numeral_char) {
         return None;
     }
 
@@ -371,15 +371,12 @@ pub fn extract_nested_archives(root_dir: &Path) {
     let mut found = true;
     while found {
         found = false;
-        let entries: Vec<PathBuf> = match walkdir::WalkDir::new(root_dir)
+        let entries: Vec<PathBuf> = walkdir::WalkDir::new(root_dir)
             .into_iter()
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
             .map(|e| e.path().to_path_buf())
-            .collect()
-        {
-            entries => entries,
-        };
+            .collect();
         for arch in entries {
             if let Some(ext) = arch.extension().and_then(|e| e.to_str()) {
                 let ext_lower = format!(".{}", ext.to_lowercase());
