@@ -99,4 +99,3 @@ pub fn get_progress_index(total_images: usize, percent: usize) -> usize {
     let target = ((total_images as f64 * (percent as f64 / 100.0)) - 0.5).round() as usize;
     target.min(total_images.saturating_sub(1))
 }
-

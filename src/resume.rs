@@ -41,9 +41,7 @@ fn load_resume_data() -> std::collections::HashMap<String, ResumeState> {
     let path = resume_file_path();
     if path.exists() {
         match std::fs::read_to_string(&path) {
-            Ok(content) => {
-                serde_json::from_str(&content).unwrap_or_default()
-            }
+            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(e) => {
                 debug_log!("Failed to load resume data: {e}");
                 std::collections::HashMap::new()
@@ -72,7 +70,17 @@ fn save_resume_data(data: &std::collections::HashMap<String, ResumeState>) {
 /// Get the resume state for a specific key.
 pub fn get_resume_state(resume_key: &str) -> Option<ResumeState> {
     let data = load_resume_data();
-    data.get(resume_key).cloned()
+    let state = data.get(resume_key).cloned();
+    debug_log!(
+        "Resume: get_resume_state(key={:?}) -> {}",
+        resume_key,
+        if state.is_some() {
+            "found"
+        } else {
+            "not found"
+        }
+    );
+    state
 }
 
 /// Save the current state for a specific key.
@@ -153,7 +161,11 @@ pub fn find_resume_dir_index(
         let saved_path = Path::new(saved_dir);
         for (i, d) in dirs_to_browse.iter().enumerate() {
             if let Ok(canon) = d.canonicalize() {
-                if canon == saved_path.canonicalize().unwrap_or_else(|_| saved_path.to_path_buf()) {
+                if canon
+                    == saved_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| saved_path.to_path_buf())
+                {
                     return Some(i);
                 }
             }
@@ -174,4 +186,3 @@ pub fn find_resume_image_index(images: &[PathBuf], state: &ResumeState) -> usize
     }
     state.image_index.min(images.len().saturating_sub(1))
 }
-

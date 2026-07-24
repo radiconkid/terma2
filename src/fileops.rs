@@ -3,15 +3,28 @@
 //! Provides functions for sorting directories, sorting images,
 //! extracting archives, and handling nested archives.
 
-use std::path::{Path, PathBuf};
 use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 
 /// Check if a character is a kanji numeral (一, 二, ..., 十, 百, 千, 万, 億, 零, 〇).
 fn is_kanji_numeral_char(c: char) -> bool {
     matches!(
         c,
-        '零' | '〇' | '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九'
-            | '十' | '百' | '千' | '万' | '億'
+        '零' | '〇'
+            | '一'
+            | '二'
+            | '三'
+            | '四'
+            | '五'
+            | '六'
+            | '七'
+            | '八'
+            | '九'
+            | '十'
+            | '百'
+            | '千'
+            | '万'
+            | '億'
     )
 }
 
@@ -143,15 +156,40 @@ pub fn natural_sort_key(s: &str) -> Vec<String> {
 }
 
 /// Get sorted sibling directories of the given path.
+/// Get sorted directories for browsing.
+///
+/// - If `initial_dir` has image files directly, it's a leaf directory (e.g. a chapter).
+///   Returns sibling directories for chapter navigation.
+/// - Otherwise, returns subdirectories of `initial_dir` for chapter navigation.
+/// - Falls back to siblings if no subdirectories exist.
 pub fn get_sorted_dirs(initial_dir: &Path) -> Vec<PathBuf> {
+    // If initial_dir has images directly, it's a leaf/chapter directory.
+    // Use siblings for navigation between chapters.
+    if !get_sorted_images(initial_dir).is_empty() {
+        let parent = initial_dir.parent().unwrap_or(initial_dir);
+        return get_sorted_children(parent);
+    }
+
+    // Otherwise, try subdirectories of initial_dir.
+    let subdirs = get_sorted_children(initial_dir);
+    if !subdirs.is_empty() {
+        return subdirs;
+    }
+
+    // No subdirectories, fall back to siblings.
     let parent = initial_dir.parent().unwrap_or(initial_dir);
-    let mut dirs: Vec<PathBuf> = match std::fs::read_dir(parent) {
+    get_sorted_children(parent)
+}
+
+/// Get sorted child directories of a given directory.
+fn get_sorted_children(dir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = match std::fs::read_dir(dir) {
         Ok(entries) => entries
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .map(|e| e.path())
             .collect(),
-        Err(_) => return vec![initial_dir.to_path_buf()],
+        Err(_) => return Vec::new(),
     };
     dirs.sort_by(|a, b| {
         let a_name = a.file_name().unwrap_or_default().to_string_lossy();
@@ -263,8 +301,17 @@ pub fn extract_archive(archive_path: &Path, extract_to: &Path) -> bool {
                 .args([
                     "x",
                     "-y",
-                    &archive_path.canonicalize().unwrap_or_else(|_| archive_path.to_path_buf()).to_string_lossy(),
-                    &format!("{}/", extract_to.canonicalize().unwrap_or_else(|_| extract_to.to_path_buf()).to_string_lossy()),
+                    &archive_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| archive_path.to_path_buf())
+                        .to_string_lossy(),
+                    &format!(
+                        "{}/",
+                        extract_to
+                            .canonicalize()
+                            .unwrap_or_else(|_| extract_to.to_path_buf())
+                            .to_string_lossy()
+                    ),
                 ])
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -282,8 +329,17 @@ pub fn extract_archive(archive_path: &Path, extract_to: &Path) -> bool {
                     .args([
                         "x",
                         "-y",
-                        &format!("-o{}", extract_to.canonicalize().unwrap_or_else(|_| extract_to.to_path_buf()).to_string_lossy()),
-                        &archive_path.canonicalize().unwrap_or_else(|_| archive_path.to_path_buf()).to_string_lossy(),
+                        &format!(
+                            "-o{}",
+                            extract_to
+                                .canonicalize()
+                                .unwrap_or_else(|_| extract_to.to_path_buf())
+                                .to_string_lossy()
+                        ),
+                        &archive_path
+                            .canonicalize()
+                            .unwrap_or_else(|_| archive_path.to_path_buf())
+                            .to_string_lossy(),
                     ])
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
@@ -358,4 +414,3 @@ pub fn is_archive_file(path: &Path) -> bool {
         "zip" | "cbz" | "rar" | "cbr" | "tar" | "gz" | "tgz" | "bz2" | "tbz" | "xz" | "txz"
     )
 }
-

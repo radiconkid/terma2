@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::debug_log;
 use crate::display;
 use crate::fileops;
 use crate::renderer::SixelRenderer;
@@ -27,7 +28,12 @@ pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
         let extracted_path = temp_dir_obj.path().to_path_buf();
         if fileops::extract_archive(&target_path, &extracted_path) {
             fileops::extract_nested_archives(&extracted_path);
-            (extracted_path, true, Some(archive_filename), Some(temp_dir_obj))
+            (
+                extracted_path,
+                true,
+                Some(archive_filename),
+                Some(temp_dir_obj),
+            )
         } else {
             anyhow::bail!(
                 "Error: {} is not a directory or a supported archive file.",
@@ -41,7 +47,12 @@ pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
     // Initialize terminal
     terminal::init_terminal()?;
 
-    let result = run_app(&initial_dir, is_archive, archive_name.as_deref(), resume_key.as_deref());
+    let result = run_app(
+        &initial_dir,
+        is_archive,
+        archive_name.as_deref(),
+        resume_key.as_deref(),
+    );
 
     // Restore terminal
     terminal::restore_terminal()?;
@@ -116,8 +127,7 @@ fn run_app(
             .sort_by(|a, b| {
                 let a_name = a.file_name().to_string_lossy().to_string();
                 let b_name = b.file_name().to_string_lossy().to_string();
-                fileops::natural_sort_key(&a_name)
-                    .cmp(&fileops::natural_sort_key(&b_name))
+                fileops::natural_sort_key(&a_name).cmp(&fileops::natural_sort_key(&b_name))
             })
             .into_iter();
         for entry in walk_iter.filter_map(|e| e.ok()) {
@@ -149,29 +159,84 @@ fn run_app(
     let mut dir_idx = 0;
     let mut img_idx = 0;
     let mut needs_redraw;
+    let mut resumed = false;
+
+    debug_log!(
+        "Resume: dirs_to_browse ({} dirs): {:?}",
+        dirs_to_browse.len(),
+        dirs_to_browse
+            .iter()
+            .map(|d| d.display().to_string())
+            .collect::<Vec<_>>()
+    );
 
     // Try to find resume directory (restores last viewed chapter and page)
     if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
+        debug_log!(
+            "Resume: state loaded: dir_path={:?}, image_name={:?}, image_index={}",
+            state.dir_path,
+            state.image_name,
+            state.image_index,
+        );
         if let Some(resume_dir_idx) = resume::find_resume_dir_index(
             &dirs_to_browse,
             &state,
             is_archive,
             archive_resume_base.as_deref(),
         ) {
+            debug_log!("Resume: found dir at index {}", resume_dir_idx);
             dir_idx = resume_dir_idx;
             let images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
             img_idx = resume::find_resume_image_index(&images, &state);
+            debug_log!("Resume: restored img_idx={}", img_idx);
+            resumed = true;
+        } else {
+            debug_log!("Resume: dir not found in dirs_to_browse");
         }
+    } else {
+        debug_log!("Resume: no saved state found for key={:?}", resume_key);
     }
+
+    debug_log!(
+        "Resume: initial state: dir_idx={}, img_idx={}, resumed={}",
+        dir_idx,
+        img_idx,
+        resumed,
+    );
 
     // Start at the specified directory, not the first sibling.
     // This runs AFTER resume so that an explicit directory choice overrides history.
-    // Only reset to page 0 if the user specified a different directory than the resume.
+    // Only reset to page 0 if the user specified a different directory than the resume,
+    // and only if resume did not successfully restore a position.
+    //
+    // If the user opened a specific chapter directory (has images directly),
+    // always start at that directory. If resume restored the same directory,
+    // keep the restored page position. If resume restored a different directory,
+    // reset to page 0 of the opened directory.
+    // For parent directories, respect the resume if it was successful.
     if !is_archive {
-        if let Some(pos) = dirs_to_browse.iter().position(|d| d == initial_dir) {
-            if pos != dir_idx {
-                dir_idx = pos;
-                img_idx = 0;
+        let is_leaf_dir = !fileops::get_sorted_images(initial_dir).is_empty();
+        if is_leaf_dir || !resumed {
+            if let Some(pos) = dirs_to_browse.iter().position(|d| d == initial_dir) {
+                debug_log!(
+                    "Resume: override: initial_dir found at pos={}, dir_idx={}, is_leaf_dir={}",
+                    pos,
+                    dir_idx,
+                    is_leaf_dir,
+                );
+                if pos != dir_idx {
+                    dir_idx = pos;
+                    img_idx = 0;
+                    debug_log!("Resume: overridden to dir_idx={}, img_idx=0", dir_idx);
+                } else {
+                    // Same directory: keep the restored page position
+                    debug_log!(
+                        "Resume: same directory, keeping restored img_idx={}",
+                        img_idx
+                    );
+                }
+            } else {
+                debug_log!("Resume: override: initial_dir not found in dirs_to_browse");
             }
         }
     }
@@ -196,12 +261,8 @@ fn run_app(
                 let _ = terminal::clear_screen();
                 let (h, w) = terminal::get_terminal_size();
 
-                let use_single = display::should_display_single(
-                    &images,
-                    img_idx,
-                    cover_mode,
-                    force_single,
-                );
+                let use_single =
+                    display::should_display_single(&images, img_idx, cover_mode, force_single);
                 let curr_right = &images[img_idx];
                 let curr_left = if !use_single && img_idx + 1 < images.len() {
                     Some(&images[img_idx + 1])
@@ -211,9 +272,7 @@ fn run_app(
 
                 // Build status line
                 let dir_name = if is_archive {
-                    archive_name
-                        .map(|n| n.to_string())
-                        .unwrap_or_default()
+                    archive_name.map(|n| n.to_string()).unwrap_or_default()
                 } else {
                     target_dir
                         .file_name()
@@ -262,10 +321,11 @@ fn run_app(
                     status += " [Comic]";
                 }
 
-                // Save resume state
-                if let Some(key) = resume_key {
+                // Save resume state per-directory
+                if let Ok(canon) = target_dir.canonicalize() {
+                    let dir_key = canon.to_string_lossy().to_string();
                     resume::save_resume_state(
-                        key,
+                        &dir_key,
                         target_dir,
                         &images,
                         img_idx,
@@ -323,8 +383,7 @@ fn run_app(
                 continue;
             }
 
-            let step =
-                display::get_display_step(&images, img_idx, cover_mode, force_single);
+            let step = display::get_display_step(&images, img_idx, cover_mode, force_single);
 
             // Determine key mappings based on reading mode
             let (key_next, key_prev, key_turbo_next, key_turbo_prev) = if reading_mode {
@@ -339,10 +398,7 @@ fn run_app(
                         terminal::InputKey::Char('l'),
                         terminal::InputKey::Right,
                     ],
-                    vec![
-                        terminal::InputKey::Char('J'),
-                        terminal::InputKey::ShiftLeft,
-                    ],
+                    vec![terminal::InputKey::Char('J'), terminal::InputKey::ShiftLeft],
                     vec![
                         terminal::InputKey::Char('K'),
                         terminal::InputKey::Char('L'),
@@ -376,8 +432,7 @@ fn run_app(
             let mut action: Option<&str> = None;
 
             if key_next.contains(&key) {
-                let next_idx =
-                    img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
+                let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
                 if next_idx >= images.len() {
                     if dir_idx + 1 < dirs_to_browse.len() {
                         dir_idx += 1;
@@ -390,10 +445,8 @@ fn run_app(
                 }
                 needs_redraw = true;
             } else if key_turbo_next.contains(&key) {
-                img_idx = std::cmp::min(
-                    images.len().saturating_sub(1),
-                    img_idx + crate::TURBO_STEP,
-                );
+                img_idx =
+                    std::cmp::min(images.len().saturating_sub(1), img_idx + crate::TURBO_STEP);
                 needs_redraw = true;
             } else if key_prev.contains(&key) {
                 if img_idx == 0 {
@@ -493,8 +546,7 @@ fn run_app(
             if let Some(action) = action {
                 match action {
                     "next" => {
-                        let next_idx = img_idx
-                            + if cover_mode && img_idx == 0 { 1 } else { step };
+                        let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
                         if next_idx >= images.len() {
                             if dir_idx + 1 < dirs_to_browse.len() {
                                 dir_idx += 1;
@@ -535,8 +587,7 @@ fn run_app(
             // User-initiated directory change (',' / '.' / next-at-end / prev-at-start)
             // dir_idx already updated, just handle sentinel values
             if img_idx == usize::MAX {
-                let new_images =
-                    fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
+                let new_images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
                 img_idx = new_images.len().saturating_sub(1);
             }
             // Otherwise img_idx is already correct (0 for next, or set above)
@@ -557,4 +608,3 @@ fn run_app(
 
     Ok(())
 }
-

@@ -28,12 +28,10 @@ pub fn get_image_aspect(path: &Path) -> f64 {
 
     // Try to read just the dimensions without full decoding
     let aspect = match image::ImageReader::open(path) {
-        Ok(reader) => {
-            match reader.into_dimensions() {
-                Ok((w, h)) if w > 0 && h > 0 => f64::from(w) / f64::from(h),
-                _ => 0.7,
-            }
-        }
+        Ok(reader) => match reader.into_dimensions() {
+            Ok((w, h)) if w > 0 && h > 0 => f64::from(w) / f64::from(h),
+            _ => 0.7,
+        },
         Err(_) => 0.7,
     };
 

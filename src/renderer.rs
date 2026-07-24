@@ -85,6 +85,7 @@ impl SixelRenderer {
             .args([
                 "-f",
                 fmt,
+                "--stretch",
                 "--size",
                 &format!("{}x{}", cols, rows),
                 "--symbols",
@@ -105,9 +106,7 @@ impl SixelRenderer {
                     debug_log!(
                         "chafa failed: rc={}, stderr={:?}",
                         output.status,
-                        String::from_utf8_lossy(
-                            &output.stderr[..200.min(output.stderr.len())]
-                        )
+                        String::from_utf8_lossy(&output.stderr[..200.min(output.stderr.len())])
                     );
                     None
                 }
@@ -237,8 +236,7 @@ impl SixelRenderer {
         let max_h = std::cmp::max(1, term_height.saturating_sub(2));
         let aspect = crate::image::get_image_aspect(image_path);
         let cell_ratio = crate::image::get_cell_aspect_ratio();
-        let mut display_cols =
-            std::cmp::max(1, (max_h as f64 * aspect * cell_ratio) as usize);
+        let mut display_cols = std::cmp::max(1, (max_h as f64 * aspect * cell_ratio) as usize);
         let mut img_height = max_h;
 
         if display_cols > term_width.saturating_sub(2) {
@@ -298,13 +296,16 @@ impl SixelRenderer {
 
         // Calculate dimensions for each page
         let left_aspect = crate::image::get_image_aspect(img_right);
-        let right_aspect = img_left.map(|p| crate::image::get_image_aspect(p)).unwrap_or(0.0);
+        let right_aspect = img_left
+            .map(|p| crate::image::get_image_aspect(p))
+            .unwrap_or(0.0);
 
         // Each page gets half the width
         let half_cols = std::cmp::max(1, term_width / 2);
 
         // Calculate heights based on each page's aspect ratio
-        let left_height = std::cmp::max(1, (half_cols as f64 / (left_aspect * cell_ratio)) as usize);
+        let left_height =
+            std::cmp::max(1, (half_cols as f64 / (left_aspect * cell_ratio)) as usize);
         let right_height = if img_left.is_some() {
             std::cmp::max(1, (half_cols as f64 / (right_aspect * cell_ratio)) as usize)
         } else {
@@ -413,7 +414,8 @@ fn probe_wezterm_imgcat() -> bool {
     let raw = b"\x00\xff\x00\x00"; // filter byte + RGB
     let compressed = {
         use std::io::Write;
-        let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         let _ = encoder.write_all(raw);
         encoder.finish().unwrap_or_default()
     };
@@ -427,10 +429,7 @@ fn probe_wezterm_imgcat() -> bool {
     // Write the imgcat escape sequence directly to stdout
     let size = png_data.len();
     let mut stdout = std::io::stdout();
-    let _ = write!(
-        stdout,
-        "\x1b]1337;File=inline=1;size={size}:{b64_data}\x07",
-    );
+    let _ = write!(stdout, "\x1b]1337;File=inline=1;size={size}:{b64_data}\x07",);
     let _ = stdout.flush();
     debug_log!("_probe_wezterm_imgcat: probe sent successfully");
     true
@@ -468,4 +467,3 @@ fn inject_kitty_z_index(data: &[u8], z: i32) -> Vec<u8> {
     result.extend_from_slice(&rest[param_end..]);
     result
 }
-

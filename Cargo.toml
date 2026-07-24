@@ -3,7 +3,7 @@ name = "terma"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal Manga Viewer - A terminal-based manga/comic reader with image display support (Rust port)"
-authors = ["sawada"]
+authors = ["radiconkid"]
 license = "MIT"
 
 [dependencies]

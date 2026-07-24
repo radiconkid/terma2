@@ -54,8 +54,12 @@ pub fn detect_terminal_type() -> TerminalType {
 /// Check if the terminal supports Sixel graphics.
 fn is_sixel_terminal() -> bool {
     let term = std::env::var("TERM").unwrap_or_default().to_lowercase();
-    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default().to_lowercase();
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default().to_lowercase();
+    let term_program = std::env::var("TERM_PROGRAM")
+        .unwrap_or_default()
+        .to_lowercase();
+    let colorterm = std::env::var("COLORTERM")
+        .unwrap_or_default()
+        .to_lowercase();
 
     // Explicitly Sixel-capable terminals
     if term.starts_with("foot") || term == "mlterm" || term.contains("contour") {
