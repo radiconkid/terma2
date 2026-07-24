@@ -39,8 +39,10 @@ jobs:
       uses: Swatinem/rust-cache@v2
     - name: Build
       run: cargo build --release --target ${{ matrix.target }} --verbose
+    - name: Rename binary for upload
+      run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/${{ matrix.asset_name }}
     - name: Upload release asset
       uses: softprops/action-gh-release@v2
       with:
-        files: target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+        files: target/${{ matrix.target }}/release/${{ matrix.asset_name }}
 
