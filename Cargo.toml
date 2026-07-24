@@ -1,0 +1,65 @@
+[package]
+name = "terma"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal Manga Viewer - A terminal-based manga/comic reader with image display support (Rust port)"
+authors = ["sawada"]
+license = "MIT"
+
+[dependencies]
+# Image processing
+image = "0.25"
+
+# Serialization for resume state
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Terminal handling
+crossterm = "0.28"
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# File system operations
+walkdir = "2"
+
+# Natural sort
+natord = "1"
+
+# Unicode width for status bar
+unicode-width = "0.2"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Archive extraction
+zip = "2"
+tar = "0.4"
+
+# Terminal size detection
+terminal_size = "0.4"
+
+# libc for TIOCGWINSZ ioctl
+libc = "0.2"
+
+# which for finding chafa binary
+which = "7"
+
+# dirs for home directory
+dirs = "6"
+
+# Temporary directory for archive extraction
+tempfile = "3"
+
+# PNG generation for WezTerm probe
+flate2 = "1"
+base64 = "0.22"
+crc32fast = "1"
+regex-lite = "0.1"
+
+[profile.release]
+opt-level = 2
+lto = true
+codegen-units = 1

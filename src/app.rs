@@ -1,0 +1,406 @@
+//! Main application module
+//!
+//! Contains the main application loop (`run`), state management,
+//! input handling, and display logic.
+
+use std::path::{Path, PathBuf};
+
+use crate::display;
+use crate::fileops;
+use crate::renderer::SixelRenderer;
+use crate::resume;
+use crate::terminal;
+
+/// Run the manga viewer application with the given target path.
+pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
+    let resume_key = target_path.canonicalize().ok().map(|p| p.to_string_lossy().to_string());
+
+    let (initial_dir, is_archive, temp_dir) = if target_path.is_file() {
+        let temp_dir_obj = tempfile::TempDir::with_prefix("terma_")?;
+        let extracted_path = temp_dir_obj.path().to_path_buf();
+        if fileops::extract_archive(&target_path, &extracted_path) {
+            fileops::extract_nested_archives(&extracted_path);
+            (extracted_path, true, Some(temp_dir_obj))
+        } else {
+            anyhow::bail!("Error: {} is not a directory or a supported archive file.", target_path.display());
+        }
+    } else {
+        (target_path, false, None)
+    };
+
+    // Initialize terminal
+    terminal::init_terminal()?;
+
+    let result = run_app(
+        &initial_dir,
+        is_archive,
+        resume_key.as_deref(),
+    );
+
+    // Restore terminal
+    terminal::restore_terminal()?;
+
+    // Drop temp dir (cleans up extracted files)
+    drop(temp_dir);
+
+    result
+}
+
+/// Internal application loop.
+fn run_app(
+    initial_dir: &Path,
+    is_archive: bool,
+    resume_key: Option<&str>,
+) -> anyhow::Result<()> {
+    let renderer = SixelRenderer::new();
+
+    // Determine directories to browse
+    let archive_resume_base;
+    let dirs_to_browse: Vec<PathBuf>;
+
+    if is_archive {
+        let mut dir = initial_dir.to_path_buf();
+        // Auto-descend if only one subdirectory
+        loop {
+            let items = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries.filter_map(|e| e.ok()).collect::<Vec<_>>(),
+                Err(_) => break,
+            };
+            let subdirs: Vec<_> = items.iter().filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).collect();
+            let files: Vec<_> = items.iter().filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false)).collect();
+            if subdirs.len() == 1 && files.is_empty() {
+                dir = subdirs[0].path();
+            } else {
+                break;
+            }
+        }
+
+        archive_resume_base = Some(dir.clone());
+        let extensions = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".avif"];
+
+        let mut dirs_with_images = Vec::new();
+        let has_images = |d: &Path| -> bool {
+            std::fs::read_dir(d)
+                .map(|entries| {
+                    entries.filter_map(|e| e.ok()).any(|e| {
+                        e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                            && e.path()
+                                .extension()
+                                .and_then(|ext| ext.to_str())
+                                .map(|ext| extensions.contains(&ext.to_lowercase().as_str()))
+                                .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        };
+
+        if has_images(&dir) {
+            dirs_with_images.push(dir.clone());
+        }
+
+        // Walk directory tree for image-containing directories
+        let walk_iter = walkdir::WalkDir::new(&dir)
+            .sort_by(|a, b| {
+                let a_name = a.file_name().to_string_lossy().to_string();
+                let b_name = b.file_name().to_string_lossy().to_string();
+                fileops::natural_sort_key(&a_name).cmp(&fileops::natural_sort_key(&b_name))
+            })
+            .into_iter();
+        for entry in walk_iter.filter_map(|e| e.ok()) {
+            if entry.file_type().is_dir() && has_images(entry.path()) {
+                dirs_with_images.push(entry.path().to_path_buf());
+            }
+        }
+
+        if dirs_with_images.is_empty() {
+            dirs_with_images.push(dir);
+        }
+
+        dirs_to_browse = dirs_with_images;
+    } else {
+        archive_resume_base = None;
+        dirs_to_browse = fileops::get_sorted_dirs(initial_dir);
+    }
+
+    // Resume state
+    let mut cover_mode = true;
+    let mut reading_mode = true;
+    let mut force_single = false;
+
+    if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
+        cover_mode = state.cover_mode;
+        reading_mode = state.reading_mode;
+    }
+
+    let mut dir_idx = 0;
+    let mut img_idx = 0;
+    let mut needs_redraw;
+
+    // Try to find resume directory
+    if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
+        if let Some(resume_dir_idx) = resume::find_resume_dir_index(
+            &dirs_to_browse,
+            &state,
+            is_archive,
+            archive_resume_base.as_deref(),
+        ) {
+            dir_idx = resume_dir_idx;
+            let images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
+            img_idx = resume::find_resume_image_index(&images, &state);
+        }
+    }
+
+    while dir_idx < dirs_to_browse.len() {
+        needs_redraw = true;
+        let target_dir = &dirs_to_browse[dir_idx];
+        let images = fileops::get_sorted_images(target_dir);
+
+        if images.is_empty() {
+            dir_idx += 1;
+            continue;
+        }
+
+        if img_idx >= images.len() {
+            img_idx = images.len().saturating_sub(1);
+        }
+
+        while img_idx < images.len() {
+            if needs_redraw {
+                let _ = terminal::clear_screen();
+                let (h, w) = terminal::get_terminal_size();
+
+                let use_single = display::should_display_single(&images, img_idx, cover_mode, force_single);
+                let curr_right = &images[img_idx];
+                let curr_left = if !use_single && img_idx + 1 < images.len() {
+                    Some(&images[img_idx + 1])
+                } else {
+                    None
+                };
+
+                // Build status line
+                let dir_name = target_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                let status = if cover_mode && img_idx == 0 {
+                    format!("DIR: {dir_name} | Cover: {}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+                } else if use_single {
+                    format!("DIR: {dir_name} | Single: {}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+                } else {
+                    let l_name = curr_left.and_then(|p| p.file_name().map(|n| n.to_string_lossy())).unwrap_or_default();
+                    format!("DIR: {dir_name} | R: {} L: {l_name}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+                };
+
+                let mut status = status;
+                if !cover_mode {
+                    status += " [NoCover]";
+                }
+                if force_single {
+                    status += " [Single]";
+                }
+                if reading_mode {
+                    status += " [Manga]";
+                } else {
+                    status += " [Comic]";
+                }
+
+                // Save resume state
+                if let Some(key) = resume_key {
+                    resume::save_resume_state(
+                        key,
+                        target_dir,
+                        &images,
+                        img_idx,
+                        is_archive,
+                        archive_resume_base.as_deref(),
+                        cover_mode,
+                        reading_mode,
+                    );
+                }
+
+                // Render
+                renderer.clear();
+                let _ = terminal::refresh_screen();
+
+                if cover_mode && img_idx == 0 {
+                    renderer.display_cover(curr_right, w, h);
+                } else if use_single {
+                    renderer.display_single(curr_right, w, h);
+                } else if let Some(left) = curr_left {
+                    if reading_mode {
+                        renderer.display_spread(curr_right, Some(left), w, h);
+                    } else {
+                        renderer.display_spread(left, Some(curr_right), w, h);
+                    }
+                } else {
+                    renderer.display_single(curr_right, w, h);
+                }
+
+                // Draw status line
+                let _ = terminal::draw_status(h, w, &status, if renderer.is_kitty || renderer.is_wezterm { 1 } else { 0 });
+
+                needs_redraw = false;
+            }
+
+            // Input handling
+            let key = terminal::get_input(None);
+            if key.is_none() {
+                continue;
+            }
+            let key = key.unwrap();
+
+            if key == terminal::InputKey::Resize {
+                needs_redraw = true;
+                continue;
+            }
+
+            let step = display::get_display_step(&images, img_idx, cover_mode, force_single);
+
+            // Determine key mappings based on reading mode
+            let (key_next, key_prev, key_turbo_next, key_turbo_prev) = if reading_mode {
+                (
+                    vec![terminal::InputKey::Char('j'), terminal::InputKey::Left, terminal::InputKey::Enter],
+                    vec![terminal::InputKey::Char('k'), terminal::InputKey::Char('l'), terminal::InputKey::Right],
+                    vec![terminal::InputKey::Char('J'), terminal::InputKey::ShiftLeft],
+                    vec![terminal::InputKey::Char('K'), terminal::InputKey::Char('L'), terminal::InputKey::ShiftRight],
+                )
+            } else {
+                (
+                    vec![terminal::InputKey::Char('j'), terminal::InputKey::Right, terminal::InputKey::Enter],
+                    vec![terminal::InputKey::Char('k'), terminal::InputKey::Char('l'), terminal::InputKey::Left],
+                    vec![terminal::InputKey::Char('J'), terminal::InputKey::ShiftRight],
+                    vec![terminal::InputKey::Char('K'), terminal::InputKey::Char('L'), terminal::InputKey::ShiftLeft],
+                )
+            };
+
+            let mut action: Option<&str> = None;
+
+            if key_next.contains(&key) {
+                let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
+                if next_idx >= images.len() {
+                    if dir_idx + 1 < dirs_to_browse.len() {
+                        dir_idx += 1;
+                        img_idx = 0;
+                        break;
+                    }
+                } else {
+                    img_idx = next_idx;
+                }
+                needs_redraw = true;
+            } else if key_turbo_next.contains(&key) {
+                img_idx = std::cmp::min(images.len().saturating_sub(1), img_idx + crate::TURBO_STEP);
+                needs_redraw = true;
+            } else if key_prev.contains(&key) {
+                if img_idx == 0 {
+                    if dir_idx > 0 {
+                        dir_idx -= 1;
+                        img_idx = usize::MAX; // Will be set to last page
+                        break;
+                    }
+                } else {
+                    img_idx = display::get_previous_page_index(&images, img_idx, cover_mode, force_single);
+                }
+                needs_redraw = true;
+            } else if key_turbo_prev.contains(&key) {
+                img_idx = img_idx.saturating_sub(crate::TURBO_STEP);
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char('0') {
+                img_idx = 0;
+                needs_redraw = true;
+            } else if let terminal::InputKey::Char(c) = key {
+                if let Some(digit) = c.to_digit(10) {
+                    if (1..=9).contains(&digit) {
+                        let percent = digit as usize * 10;
+                        img_idx = display::get_progress_index(images.len(), percent);
+                        needs_redraw = true;
+                    }
+                }
+            } else if key == terminal::InputKey::Char('c') {
+                cover_mode = !cover_mode;
+                img_idx = 0;
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char('r') {
+                reading_mode = !reading_mode;
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char('s') {
+                force_single = !force_single;
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char(',') {
+                if dir_idx + 1 < dirs_to_browse.len() {
+                    dir_idx += 1;
+                    img_idx = 0;
+                    break;
+                }
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char('.') {
+                if dir_idx > 0 {
+                    dir_idx -= 1;
+                    img_idx = 0;
+                    break;
+                }
+                needs_redraw = true;
+            } else if key == terminal::InputKey::Char('q')
+                || key == terminal::InputKey::Char('Q')
+                || key == terminal::InputKey::Char('h')
+            {
+                return Ok(());
+            } else if key == terminal::InputKey::MouseLeft {
+                action = Some("next");
+            } else if key == terminal::InputKey::MouseRight {
+                action = Some("prev");
+            } else if key == terminal::InputKey::MouseMiddle {
+                return Ok(());
+            } else if key == terminal::InputKey::Escape {
+                // ESC sequence - handled by terminal module
+            }
+
+            // Handle mouse actions
+            if let Some(action) = action {
+                match action {
+                    "next" => {
+                        let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
+                        if next_idx >= images.len() {
+                            if dir_idx + 1 < dirs_to_browse.len() {
+                                dir_idx += 1;
+                                img_idx = 0;
+                                break;
+                            }
+                        } else {
+                            img_idx = next_idx;
+                        }
+                        needs_redraw = true;
+                    }
+                    "prev" => {
+                        if img_idx == 0 {
+                            if dir_idx > 0 {
+                                dir_idx -= 1;
+                                img_idx = usize::MAX;
+                                break;
+                            }
+                        } else {
+                            img_idx = display::get_previous_page_index(&images, img_idx, cover_mode, force_single);
+                        }
+                        needs_redraw = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // If we didn't break out of the inner loop, advance to next directory
+        if img_idx < images.len() {
+            dir_idx += 1;
+            img_idx = 0;
+        } else {
+            // Handle the case where we broke out with img_idx = usize::MAX (prev volume)
+            if img_idx == usize::MAX {
+                // Get images from the new directory and set to last page
+                let new_images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
+                img_idx = new_images.len().saturating_sub(1);
+            }
+        }
+    }
+
+    renderer.clear();
+    println!("All files displayed.");
+
+    Ok(())
+}
+
