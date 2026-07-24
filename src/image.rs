@@ -3,26 +3,47 @@
 //! Provides functions for getting image aspect ratio, terminal cell pixel size,
 //! and cell aspect ratio. Mirrors the functionality from terma.py.
 
-use anyhow::Result;
-use image::GenericImageView;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Mutex;
+
+/// Cache for image aspect ratios to avoid repeated decoding.
+static ASPECT_CACHE: std::sync::LazyLock<Mutex<HashMap<String, f64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Get the aspect ratio (width/height) of an image.
 ///
 /// Returns the aspect ratio, or a default of 0.7 if the image cannot be read.
-/// For images with EXIF orientation that swaps width/height, the aspect ratio
-/// is adjusted accordingly.
+/// Results are cached to avoid repeated decoding.
 pub fn get_image_aspect(path: &Path) -> f64 {
-    match image::open(path) {
-        Ok(img) => {
-            let (w, h) = img.dimensions();
-            // Note: EXIF orientation handling for rotation would require
-            // additional processing. For now, we use raw dimensions.
-            // TODO: Add EXIF orientation support if needed.
-            f64::from(w) / f64::from(h)
+    let path_str = path.to_string_lossy().to_string();
+
+    // Check cache first
+    {
+        let cache = ASPECT_CACHE.lock().unwrap();
+        if let Some(&cached) = cache.get(&path_str) {
+            return cached;
+        }
+    }
+
+    // Try to read just the dimensions without full decoding
+    let aspect = match image::ImageReader::open(path) {
+        Ok(reader) => {
+            match reader.into_dimensions() {
+                Ok((w, h)) if w > 0 && h > 0 => f64::from(w) / f64::from(h),
+                _ => 0.7,
+            }
         }
         Err(_) => 0.7,
+    };
+
+    // Store in cache
+    {
+        let mut cache = ASPECT_CACHE.lock().unwrap();
+        cache.insert(path_str, aspect);
     }
+
+    aspect
 }
 
 /// Get the terminal's cell pixel size (width, height) in physical pixels.
@@ -73,13 +94,6 @@ pub fn get_cell_aspect_ratio() -> f64 {
         }
     }
     2.45
-}
-
-/// Open an image file and return the decoded image.
-///
-/// This is a convenience wrapper around `image::open` for use by other modules.
-pub fn open_image(path: &Path) -> Result<image::DynamicImage> {
-    Ok(image::open(path)?)
 }
 
 /// Check if an image is landscape (width > height).

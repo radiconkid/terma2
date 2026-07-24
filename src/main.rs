@@ -18,17 +18,37 @@ mod terminal;
 
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 const VERSION: &str = "0.1.0";
 const TURBO_STEP: usize = 10;
 
+/// Simple debug logger that writes to stderr when TERMA_DEBUG is set.
+static TERMA_DEBUG_INIT: OnceLock<bool> = OnceLock::new();
+
+fn is_debug_enabled() -> bool {
+    *TERMA_DEBUG_INIT.get_or_init(|| {
+        let enabled = std::env::var("TERMA_DEBUG").as_deref() == Ok("1");
+        if enabled {
+            eprintln!("[terma] TERMA_DEBUG=1 detected, logging to stderr");
+        }
+        enabled
+    })
+}
+
+/// Debug log macro that only outputs when TERMA_DEBUG=1.
+#[macro_export]
+macro_rules! debug_log {
+    ($($arg:tt)*) => {
+        if $crate::is_debug_enabled() {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
 fn main() -> Result<()> {
-    // Initialize logging
-    if std::env::var("TERMA_DEBUG").as_deref() == Ok("1") {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
-            .target(env_logger::Target::Stdout)
-            .init();
-    }
+    // Initialize debug logging (checks TERMA_DEBUG)
+    is_debug_enabled();
 
     let args: Vec<String> = std::env::args().collect();
 
@@ -64,6 +84,8 @@ Arguments:
   directory_or_archive    Manga directory or archive (zip/tar/cbz) to view (default: current directory)
   -v, --version           Show version information
   --help                  Show this help message
+Environment:
+  TERMA_DEBUG=1           Enable debug logging to stderr (redirect with 2>file.log)
 Resume:
   Last viewed positions are saved to ~/.terma_resume.json and restored automatically.
 Controls:

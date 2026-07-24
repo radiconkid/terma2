@@ -13,29 +13,35 @@ use crate::terminal;
 
 /// Run the manga viewer application with the given target path.
 pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
-    let resume_key = target_path.canonicalize().ok().map(|p| p.to_string_lossy().to_string());
+    let resume_key = target_path
+        .canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
 
-    let (initial_dir, is_archive, temp_dir) = if target_path.is_file() {
+    let (initial_dir, is_archive, archive_name, temp_dir) = if target_path.is_file() {
+        let archive_filename = target_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let temp_dir_obj = tempfile::TempDir::with_prefix("terma_")?;
         let extracted_path = temp_dir_obj.path().to_path_buf();
         if fileops::extract_archive(&target_path, &extracted_path) {
             fileops::extract_nested_archives(&extracted_path);
-            (extracted_path, true, Some(temp_dir_obj))
+            (extracted_path, true, Some(archive_filename), Some(temp_dir_obj))
         } else {
-            anyhow::bail!("Error: {} is not a directory or a supported archive file.", target_path.display());
+            anyhow::bail!(
+                "Error: {} is not a directory or a supported archive file.",
+                target_path.display()
+            );
         }
     } else {
-        (target_path, false, None)
+        (target_path, false, None, None)
     };
 
     // Initialize terminal
     terminal::init_terminal()?;
 
-    let result = run_app(
-        &initial_dir,
-        is_archive,
-        resume_key.as_deref(),
-    );
+    let result = run_app(&initial_dir, is_archive, archive_name.as_deref(), resume_key.as_deref());
 
     // Restore terminal
     terminal::restore_terminal()?;
@@ -50,6 +56,7 @@ pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
 fn run_app(
     initial_dir: &Path,
     is_archive: bool,
+    archive_name: Option<&str>,
     resume_key: Option<&str>,
 ) -> anyhow::Result<()> {
     let renderer = SixelRenderer::new();
@@ -66,8 +73,14 @@ fn run_app(
                 Ok(entries) => entries.filter_map(|e| e.ok()).collect::<Vec<_>>(),
                 Err(_) => break,
             };
-            let subdirs: Vec<_> = items.iter().filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false)).collect();
-            let files: Vec<_> = items.iter().filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false)).collect();
+            let subdirs: Vec<_> = items
+                .iter()
+                .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+                .collect();
+            let files: Vec<_> = items
+                .iter()
+                .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                .collect();
             if subdirs.len() == 1 && files.is_empty() {
                 dir = subdirs[0].path();
             } else {
@@ -103,7 +116,8 @@ fn run_app(
             .sort_by(|a, b| {
                 let a_name = a.file_name().to_string_lossy().to_string();
                 let b_name = b.file_name().to_string_lossy().to_string();
-                fileops::natural_sort_key(&a_name).cmp(&fileops::natural_sort_key(&b_name))
+                fileops::natural_sort_key(&a_name)
+                    .cmp(&fileops::natural_sort_key(&b_name))
             })
             .into_iter();
         for entry in walk_iter.filter_map(|e| e.ok()) {
@@ -136,7 +150,7 @@ fn run_app(
     let mut img_idx = 0;
     let mut needs_redraw;
 
-    // Try to find resume directory
+    // Try to find resume directory (restores last viewed chapter and page)
     if let Some(state) = resume_key.and_then(|key| resume::get_resume_state(key)) {
         if let Some(resume_dir_idx) = resume::find_resume_dir_index(
             &dirs_to_browse,
@@ -150,8 +164,18 @@ fn run_app(
         }
     }
 
+    // Start at the specified directory, not the first sibling.
+    // This runs AFTER resume so that an explicit directory choice overrides history.
+    if !is_archive {
+        if let Some(pos) = dirs_to_browse.iter().position(|d| d == initial_dir) {
+            dir_idx = pos;
+            img_idx = 0;
+        }
+    }
+
     while dir_idx < dirs_to_browse.len() {
         needs_redraw = true;
+        let mut dir_changed = false;
         let target_dir = &dirs_to_browse[dir_idx];
         let images = fileops::get_sorted_images(target_dir);
 
@@ -169,7 +193,12 @@ fn run_app(
                 let _ = terminal::clear_screen();
                 let (h, w) = terminal::get_terminal_size();
 
-                let use_single = display::should_display_single(&images, img_idx, cover_mode, force_single);
+                let use_single = display::should_display_single(
+                    &images,
+                    img_idx,
+                    cover_mode,
+                    force_single,
+                );
                 let curr_right = &images[img_idx];
                 let curr_left = if !use_single && img_idx + 1 < images.len() {
                     Some(&images[img_idx + 1])
@@ -178,14 +207,43 @@ fn run_app(
                 };
 
                 // Build status line
-                let dir_name = target_dir.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                let status = if cover_mode && img_idx == 0 {
-                    format!("DIR: {dir_name} | Cover: {}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
-                } else if use_single {
-                    format!("DIR: {dir_name} | Single: {}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+                let dir_name = if is_archive {
+                    archive_name
+                        .map(|n| n.to_string())
+                        .unwrap_or_default()
                 } else {
-                    let l_name = curr_left.and_then(|p| p.file_name().map(|n| n.to_string_lossy())).unwrap_or_default();
-                    format!("DIR: {dir_name} | R: {} L: {l_name}", curr_right.file_name().map(|n| n.to_string_lossy()).unwrap_or_default())
+                    target_dir
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                };
+                let status = if cover_mode && img_idx == 0 {
+                    format!(
+                        "DIR: {dir_name} | Cover: {}",
+                        curr_right
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    )
+                } else if use_single {
+                    format!(
+                        "DIR: {dir_name} | Single: {}",
+                        curr_right
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    )
+                } else {
+                    let l_name = curr_left
+                        .and_then(|p| p.file_name().map(|n| n.to_string_lossy()))
+                        .unwrap_or_default();
+                    format!(
+                        "DIR: {dir_name} | R: {} L: {l_name}",
+                        curr_right
+                            .file_name()
+                            .map(|n| n.to_string_lossy())
+                            .unwrap_or_default()
+                    )
                 };
 
                 let mut status = status;
@@ -225,16 +283,27 @@ fn run_app(
                     renderer.display_single(curr_right, w, h);
                 } else if let Some(left) = curr_left {
                     if reading_mode {
-                        renderer.display_spread(curr_right, Some(left), w, h);
-                    } else {
+                        // Manga (RTL): next page on LEFT, current page on RIGHT
                         renderer.display_spread(left, Some(curr_right), w, h);
+                    } else {
+                        // Comic (LTR): current page on LEFT, next page on RIGHT
+                        renderer.display_spread(curr_right, Some(left), w, h);
                     }
                 } else {
                     renderer.display_single(curr_right, w, h);
                 }
 
                 // Draw status line
-                let _ = terminal::draw_status(h, w, &status, if renderer.is_kitty || renderer.is_wezterm { 1 } else { 0 });
+                let _ = terminal::draw_status(
+                    h,
+                    w,
+                    &status,
+                    if renderer.is_kitty || renderer.is_wezterm {
+                        1
+                    } else {
+                        0
+                    },
+                );
 
                 needs_redraw = false;
             }
@@ -251,33 +320,66 @@ fn run_app(
                 continue;
             }
 
-            let step = display::get_display_step(&images, img_idx, cover_mode, force_single);
+            let step =
+                display::get_display_step(&images, img_idx, cover_mode, force_single);
 
             // Determine key mappings based on reading mode
             let (key_next, key_prev, key_turbo_next, key_turbo_prev) = if reading_mode {
                 (
-                    vec![terminal::InputKey::Char('j'), terminal::InputKey::Left, terminal::InputKey::Enter],
-                    vec![terminal::InputKey::Char('k'), terminal::InputKey::Char('l'), terminal::InputKey::Right],
-                    vec![terminal::InputKey::Char('J'), terminal::InputKey::ShiftLeft],
-                    vec![terminal::InputKey::Char('K'), terminal::InputKey::Char('L'), terminal::InputKey::ShiftRight],
+                    vec![
+                        terminal::InputKey::Char('j'),
+                        terminal::InputKey::Left,
+                        terminal::InputKey::Enter,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('k'),
+                        terminal::InputKey::Char('l'),
+                        terminal::InputKey::Right,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('J'),
+                        terminal::InputKey::ShiftLeft,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('K'),
+                        terminal::InputKey::Char('L'),
+                        terminal::InputKey::ShiftRight,
+                    ],
                 )
             } else {
                 (
-                    vec![terminal::InputKey::Char('j'), terminal::InputKey::Right, terminal::InputKey::Enter],
-                    vec![terminal::InputKey::Char('k'), terminal::InputKey::Char('l'), terminal::InputKey::Left],
-                    vec![terminal::InputKey::Char('J'), terminal::InputKey::ShiftRight],
-                    vec![terminal::InputKey::Char('K'), terminal::InputKey::Char('L'), terminal::InputKey::ShiftLeft],
+                    vec![
+                        terminal::InputKey::Char('j'),
+                        terminal::InputKey::Right,
+                        terminal::InputKey::Enter,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('k'),
+                        terminal::InputKey::Char('l'),
+                        terminal::InputKey::Left,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('J'),
+                        terminal::InputKey::ShiftRight,
+                    ],
+                    vec![
+                        terminal::InputKey::Char('K'),
+                        terminal::InputKey::Char('L'),
+                        terminal::InputKey::ShiftLeft,
+                    ],
                 )
             };
 
             let mut action: Option<&str> = None;
 
             if key_next.contains(&key) {
-                let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
+                let next_idx =
+                    img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
                 if next_idx >= images.len() {
                     if dir_idx + 1 < dirs_to_browse.len() {
                         dir_idx += 1;
                         img_idx = 0;
+                        dir_changed = true;
                         break;
                     }
                 } else {
@@ -285,17 +387,26 @@ fn run_app(
                 }
                 needs_redraw = true;
             } else if key_turbo_next.contains(&key) {
-                img_idx = std::cmp::min(images.len().saturating_sub(1), img_idx + crate::TURBO_STEP);
+                img_idx = std::cmp::min(
+                    images.len().saturating_sub(1),
+                    img_idx + crate::TURBO_STEP,
+                );
                 needs_redraw = true;
             } else if key_prev.contains(&key) {
                 if img_idx == 0 {
                     if dir_idx > 0 {
                         dir_idx -= 1;
                         img_idx = usize::MAX; // Will be set to last page
+                        dir_changed = true;
                         break;
                     }
                 } else {
-                    img_idx = display::get_previous_page_index(&images, img_idx, cover_mode, force_single);
+                    img_idx = display::get_previous_page_index(
+                        &images,
+                        img_idx,
+                        cover_mode,
+                        force_single,
+                    );
                 }
                 needs_redraw = true;
             } else if key_turbo_prev.contains(&key) {
@@ -304,14 +415,10 @@ fn run_app(
             } else if key == terminal::InputKey::Char('0') {
                 img_idx = 0;
                 needs_redraw = true;
-            } else if let terminal::InputKey::Char(c) = key {
-                if let Some(digit) = c.to_digit(10) {
-                    if (1..=9).contains(&digit) {
-                        let percent = digit as usize * 10;
-                        img_idx = display::get_progress_index(images.len(), percent);
-                        needs_redraw = true;
-                    }
-                }
+            } else if let terminal::InputKey::Char(c @ '1'..='9') = key {
+                let percent = c.to_digit(10).unwrap() as usize * 10;
+                img_idx = display::get_progress_index(images.len(), percent);
+                needs_redraw = true;
             } else if key == terminal::InputKey::Char('c') {
                 cover_mode = !cover_mode;
                 img_idx = 0;
@@ -326,6 +433,7 @@ fn run_app(
                 if dir_idx + 1 < dirs_to_browse.len() {
                     dir_idx += 1;
                     img_idx = 0;
+                    dir_changed = true;
                     break;
                 }
                 needs_redraw = true;
@@ -333,6 +441,7 @@ fn run_app(
                 if dir_idx > 0 {
                     dir_idx -= 1;
                     img_idx = 0;
+                    dir_changed = true;
                     break;
                 }
                 needs_redraw = true;
@@ -355,11 +464,13 @@ fn run_app(
             if let Some(action) = action {
                 match action {
                     "next" => {
-                        let next_idx = img_idx + if cover_mode && img_idx == 0 { 1 } else { step };
+                        let next_idx = img_idx
+                            + if cover_mode && img_idx == 0 { 1 } else { step };
                         if next_idx >= images.len() {
                             if dir_idx + 1 < dirs_to_browse.len() {
                                 dir_idx += 1;
                                 img_idx = 0;
+                                dir_changed = true;
                                 break;
                             }
                         } else {
@@ -372,10 +483,16 @@ fn run_app(
                             if dir_idx > 0 {
                                 dir_idx -= 1;
                                 img_idx = usize::MAX;
+                                dir_changed = true;
                                 break;
                             }
                         } else {
-                            img_idx = display::get_previous_page_index(&images, img_idx, cover_mode, force_single);
+                            img_idx = display::get_previous_page_index(
+                                &images,
+                                img_idx,
+                                cover_mode,
+                                force_single,
+                            );
                         }
                         needs_redraw = true;
                     }
@@ -384,17 +501,25 @@ fn run_app(
             }
         }
 
-        // If we didn't break out of the inner loop, advance to next directory
-        if img_idx < images.len() {
-            dir_idx += 1;
-            img_idx = 0;
-        } else {
-            // Handle the case where we broke out with img_idx = usize::MAX (prev volume)
+        // Post-loop: handle directory transitions
+        if dir_changed {
+            // User-initiated directory change (',' / '.' / next-at-end / prev-at-start)
+            // dir_idx already updated, just handle sentinel values
             if img_idx == usize::MAX {
-                // Get images from the new directory and set to last page
-                let new_images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
+                let new_images =
+                    fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
                 img_idx = new_images.len().saturating_sub(1);
             }
+            // Otherwise img_idx is already correct (0 for next, or set above)
+        } else if img_idx < images.len() {
+            // Natural end of inner loop (all images viewed)
+            dir_idx += 1;
+            img_idx = 0;
+        } else if img_idx == usize::MAX {
+            // Previous volume sentinel (shouldn't reach here without dir_changed,
+            // but handle defensively)
+            let new_images = fileops::get_sorted_images(&dirs_to_browse[dir_idx]);
+            img_idx = new_images.len().saturating_sub(1);
         }
     }
 

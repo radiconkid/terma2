@@ -6,12 +6,10 @@
 //! - WezTerm imgcat (native protocol)
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
-use ::image::GenericImageView;
-
-use crate::image;
+use crate::debug_log;
 use crate::terminal;
 
 /// The image renderer, automatically selecting the best available method.
@@ -37,9 +35,9 @@ impl SixelRenderer {
         let chafa_required = !is_kitty && !is_wezterm;
 
         let (is_wezterm, chafa_required) = if chafa_required && !use_chafa {
-            log::debug!("SixelRenderer: chafa not available, probing with imgcat...");
+            debug_log!("SixelRenderer: chafa not available, probing with imgcat...");
             if probe_wezterm_imgcat() {
-                log::debug!("SixelRenderer: imgcat probe succeeded, detected WezTerm!");
+                debug_log!("SixelRenderer: imgcat probe succeeded, detected WezTerm!");
                 (true, false)
             } else {
                 (false, true)
@@ -49,10 +47,10 @@ impl SixelRenderer {
         };
 
         if chafa_required && !use_chafa {
-            log::debug!("SixelRenderer: chafa is required but not available!");
+            debug_log!("SixelRenderer: chafa is required but not available!");
         }
 
-        log::debug!(
+        debug_log!(
             "SixelRenderer: chafa={}, kitty={}, wezterm={}, chafa_required={}",
             use_chafa,
             is_kitty,
@@ -104,7 +102,7 @@ impl SixelRenderer {
                 if output.status.success() && !output.stdout.is_empty() {
                     Some(output.stdout)
                 } else {
-                    log::debug!(
+                    debug_log!(
                         "chafa failed: rc={}, stderr={:?}",
                         output.status,
                         String::from_utf8_lossy(
@@ -115,7 +113,7 @@ impl SixelRenderer {
                 }
             }
             Err(e) => {
-                log::debug!("chafa error: {e}");
+                debug_log!("chafa error: {e}");
                 None
             }
         }
@@ -137,11 +135,11 @@ impl SixelRenderer {
                 .status();
             if let Ok(status) = result {
                 if status.success() {
-                    log::debug!("Fallback: used Kitty icat");
+                    debug_log!("Fallback: used Kitty icat");
                     return true;
                 }
             }
-            log::debug!("Kitty icat fallback error");
+            debug_log!("Kitty icat fallback error");
         }
 
         if self.is_wezterm {
@@ -152,11 +150,11 @@ impl SixelRenderer {
                 .status();
             if let Ok(status) = result {
                 if status.success() {
-                    log::debug!("Fallback: used WezTerm imgcat");
+                    debug_log!("Fallback: used WezTerm imgcat");
                     return true;
                 }
             }
-            log::debug!("WezTerm imgcat fallback error");
+            debug_log!("WezTerm imgcat fallback error");
         }
 
         false
@@ -237,8 +235,8 @@ impl SixelRenderer {
         let _ = stdout.flush();
 
         let max_h = std::cmp::max(1, term_height.saturating_sub(2));
-        let aspect = image::get_image_aspect(image_path);
-        let cell_ratio = image::get_cell_aspect_ratio();
+        let aspect = crate::image::get_image_aspect(image_path);
+        let cell_ratio = crate::image::get_cell_aspect_ratio();
         let mut display_cols =
             std::cmp::max(1, (max_h as f64 * aspect * cell_ratio) as usize);
         let mut img_height = max_h;
@@ -255,12 +253,12 @@ impl SixelRenderer {
                 self.output_sixel(&data);
                 return;
             }
-            log::debug!("chafa conversion failed, trying native fallback");
+            debug_log!("chafa conversion failed, trying native fallback");
         }
 
         if self.is_kitty || self.is_wezterm {
             if !self.fallback_display(image_path, display_cols, img_height) {
-                log::debug!("Native display failed for Kitty/WezTerm");
+                debug_log!("Native display failed for Kitty/WezTerm");
                 self.show_no_display_warning();
             }
             return;
@@ -270,9 +268,9 @@ impl SixelRenderer {
             self.center_cursor(display_cols, term_width);
             self.output_sixel(&data);
         } else {
-            log::debug!("Sixel conversion failed, trying fallback display");
+            debug_log!("Sixel conversion failed, trying fallback display");
             if !self.fallback_display(image_path, display_cols, img_height) {
-                log::debug!("Fallback display also failed");
+                debug_log!("Fallback display also failed");
                 self.show_no_display_warning();
             }
         }
@@ -296,172 +294,80 @@ impl SixelRenderer {
         let _ = stdout.flush();
 
         let max_h = std::cmp::max(1, term_height.saturating_sub(2));
-        let cell_ratio = image::get_cell_aspect_ratio();
+        let cell_ratio = crate::image::get_cell_aspect_ratio();
 
-        if self.use_chafa && img_left.is_some() {
-            if let Some(combined_data) =
-                self.combine_and_convert(img_right, img_left.unwrap(), max_h, term_width, cell_ratio)
-            {
-                self.output_sixel(&combined_data);
-                return;
+        // Calculate dimensions for each page
+        let left_aspect = crate::image::get_image_aspect(img_right);
+        let right_aspect = img_left.map(|p| crate::image::get_image_aspect(p)).unwrap_or(0.0);
+
+        // Each page gets half the width
+        let half_cols = std::cmp::max(1, term_width.saturating_sub(2) / 2);
+
+        // Calculate heights based on each page's aspect ratio
+        let left_height = std::cmp::max(1, (half_cols as f64 / (left_aspect * cell_ratio)) as usize);
+        let right_height = if img_left.is_some() {
+            std::cmp::max(1, (half_cols as f64 / (right_aspect * cell_ratio)) as usize)
+        } else {
+            0
+        };
+
+        // Use the taller of the two
+        let img_height = std::cmp::max(left_height, right_height);
+
+        // Scale down if too tall
+        let (display_cols, display_height) = if img_height > max_h {
+            let scale = max_h as f64 / img_height as f64;
+            let scaled_cols = std::cmp::max(1, (half_cols as f64 * scale) as usize);
+            (scaled_cols * 2, max_h)
+        } else {
+            (half_cols * 2, img_height)
+        };
+
+        // Display left page
+        let left_cols = display_cols / 2;
+
+        // Calculate centering offset
+        let offset = if display_cols < term_width {
+            (term_width - display_cols) / 2
+        } else {
+            0
+        };
+
+        // Center the spread horizontally
+        if offset > 0 {
+            let _ = write!(stdout, "\x1b[1;{}H", offset + 1);
+            let _ = stdout.flush();
+        }
+        if self.use_chafa {
+            if let Some(data) = self.sixel_convert(img_right, left_cols, display_height) {
+                self.output_sixel(&data);
+            } else if self.is_kitty || self.is_wezterm {
+                self.fallback_display(img_right, left_cols, display_height);
             }
-            log::debug!("Sixel spread conversion failed, trying fallback display");
+        } else if self.is_kitty || self.is_wezterm {
+            self.fallback_display(img_right, left_cols, display_height);
+        } else if let Some(data) = self.sixel_convert(img_right, left_cols, display_height) {
+            self.output_sixel(&data);
         }
 
-        if (self.is_kitty || self.is_wezterm) && img_left.is_some() {
-            if let Some(tmp_path) = self.combine_images_temp(img_right, img_left.unwrap()) {
-                let aspect_r = image::get_image_aspect(img_right);
-                let aspect_l = image::get_image_aspect(img_left.unwrap());
-                let combined_aspect = aspect_l + aspect_r;
-                let mut display_cols = std::cmp::max(
-                    1,
-                    (max_h as f64 * combined_aspect * cell_ratio) as usize,
-                );
-                let mut img_height = max_h;
-                if display_cols > term_width.saturating_sub(2) {
-                    let scale = (term_width.saturating_sub(2)) as f64 / display_cols as f64;
-                    display_cols = term_width.saturating_sub(2);
-                    img_height = std::cmp::max(1, (img_height as f64 * scale) as usize);
+        // Display right page (if any) - move cursor to the right first
+        if let Some(right_path) = img_left {
+            let right_cols = display_cols - left_cols;
+            // Move cursor to the right side of the screen for the second image
+            let _ = write!(stdout, "\x1b[1;{}H", offset + left_cols + 1);
+            let _ = stdout.flush();
+            if self.use_chafa {
+                if let Some(data) = self.sixel_convert(right_path, right_cols, display_height) {
+                    self.output_sixel(&data);
+                } else if self.is_kitty || self.is_wezterm {
+                    self.fallback_display(right_path, right_cols, display_height);
                 }
-                if self.fallback_display(&tmp_path, display_cols, img_height) {
-                    let _ = std::fs::remove_file(&tmp_path);
-                    return;
-                }
-                let _ = std::fs::remove_file(&tmp_path);
-                log::debug!("Native spread display failed");
+            } else if self.is_kitty || self.is_wezterm {
+                self.fallback_display(right_path, right_cols, display_height);
+            } else if let Some(data) = self.sixel_convert(right_path, right_cols, display_height) {
+                self.output_sixel(&data);
             }
         }
-
-        if self.is_kitty || self.is_wezterm {
-            self.display_single(img_right, term_width, term_height);
-            return;
-        }
-
-        if img_left.is_some() {
-            if let Some(combined_data) =
-                self.combine_and_convert(img_right, img_left.unwrap(), max_h, term_width, cell_ratio)
-            {
-                self.output_sixel(&combined_data);
-                return;
-            }
-            log::debug!("Sixel spread conversion failed, trying fallback display");
-        }
-
-        self.display_single(img_right, term_width, term_height);
-    }
-
-    /// Combine two images and convert using chafa.
-    fn combine_and_convert(
-        &self,
-        img_right: &Path,
-        img_left: &Path,
-        max_h: usize,
-        term_width: usize,
-        cell_ratio: f64,
-    ) -> Option<Vec<u8>> {
-        let im_l = crate::image::open_image(img_left).ok()?;
-        let im_r = crate::image::open_image(img_right).ok()?;
-
-        let (w_l, h_l) = im_l.dimensions();
-        let (w_r, h_r) = im_r.dimensions();
-
-        let target_h = std::cmp::max(h_l, h_r);
-        let new_w_l = (w_l as f64 * target_h as f64 / h_l as f64) as u32;
-        let new_w_r = (w_r as f64 * target_h as f64 / h_r as f64) as u32;
-
-        let im_l_resized = ::image::imageops::resize(
-            &im_l,
-            new_w_l,
-            target_h,
-            ::image::imageops::FilterType::Lanczos3,
-        );
-        let im_r_resized = ::image::imageops::resize(
-            &im_r,
-            new_w_r,
-            target_h,
-            ::image::imageops::FilterType::Lanczos3,
-        );
-
-        let combined_w = new_w_l + new_w_r;
-        let mut combined = ::image::RgbImage::new(combined_w, target_h);
-
-        for y in 0..target_h {
-            for x in 0..new_w_l {
-                let p = im_l_resized.get_pixel(x, y);
-                combined.put_pixel(x, y, ::image::Rgb([p[0], p[1], p[2]]));
-            }
-        }
-        for y in 0..target_h {
-            for x in 0..new_w_r {
-                let p = im_r_resized.get_pixel(x, y);
-                combined.put_pixel(new_w_l + x, y, ::image::Rgb([p[0], p[1], p[2]]));
-            }
-        }
-
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join(format!("terma_spread_{}.png", std::process::id()));
-        let _ = combined.save(&tmp_path);
-
-        let aspect = combined_w as f64 / target_h as f64;
-        let mut display_cols =
-            std::cmp::max(1, (max_h as f64 * aspect * cell_ratio) as usize);
-        let mut img_height = max_h;
-        if display_cols > term_width.saturating_sub(2) {
-            let scale = (term_width.saturating_sub(2)) as f64 / display_cols as f64;
-            display_cols = term_width.saturating_sub(2);
-            img_height = std::cmp::max(1, (img_height as f64 * scale) as usize);
-        }
-
-        let result = self.sixel_convert(&tmp_path, display_cols, img_height);
-        let _ = std::fs::remove_file(&tmp_path);
-        result
-    }
-
-    /// Combine two images into a temp file and return the path.
-    fn combine_images_temp(&self, img_right: &Path, img_left: &Path) -> Option<PathBuf> {
-        let im_l = crate::image::open_image(img_left).ok()?;
-        let im_r = crate::image::open_image(img_right).ok()?;
-
-        let (w_l, h_l) = im_l.dimensions();
-        let (w_r, h_r) = im_r.dimensions();
-
-        let target_h = std::cmp::max(h_l, h_r);
-        let new_w_l = (w_l as f64 * target_h as f64 / h_l as f64) as u32;
-        let new_w_r = (w_r as f64 * target_h as f64 / h_r as f64) as u32;
-
-        let im_l_resized = ::image::imageops::resize(
-            &im_l,
-            new_w_l,
-            target_h,
-            ::image::imageops::FilterType::Lanczos3,
-        );
-        let im_r_resized = ::image::imageops::resize(
-            &im_r,
-            new_w_r,
-            target_h,
-            ::image::imageops::FilterType::Lanczos3,
-        );
-
-        let combined_w = new_w_l + new_w_r;
-        let mut combined = ::image::RgbImage::new(combined_w, target_h);
-
-        for y in 0..target_h {
-            for x in 0..new_w_l {
-                let p = im_l_resized.get_pixel(x, y);
-                combined.put_pixel(x, y, ::image::Rgb([p[0], p[1], p[2]]));
-            }
-        }
-        for y in 0..target_h {
-            for x in 0..new_w_r {
-                let p = im_r_resized.get_pixel(x, y);
-                combined.put_pixel(new_w_l + x, y, ::image::Rgb([p[0], p[1], p[2]]));
-            }
-        }
-
-        let tmp_dir = std::env::temp_dir();
-        let tmp_path = tmp_dir.join(format!("terma_spread_{}.png", std::process::id()));
-        let _ = combined.save(&tmp_path);
-        Some(tmp_path)
     }
 }
 
@@ -526,7 +432,7 @@ fn probe_wezterm_imgcat() -> bool {
         "\x1b]1337;File=inline=1;size={size}:{b64_data}\x07",
     );
     let _ = stdout.flush();
-    log::debug!("_probe_wezterm_imgcat: probe sent successfully");
+    debug_log!("_probe_wezterm_imgcat: probe sent successfully");
     true
 }
 

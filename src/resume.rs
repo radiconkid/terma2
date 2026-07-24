@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+use crate::debug_log;
+
 /// Resume state for a single directory/archive
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResumeState {
@@ -43,7 +45,7 @@ fn load_resume_data() -> std::collections::HashMap<String, ResumeState> {
                 serde_json::from_str(&content).unwrap_or_default()
             }
             Err(e) => {
-                log::debug!("Failed to load resume data: {e}");
+                debug_log!("Failed to load resume data: {e}");
                 std::collections::HashMap::new()
             }
         }
@@ -58,11 +60,11 @@ fn save_resume_data(data: &std::collections::HashMap<String, ResumeState>) {
     match serde_json::to_string_pretty(data) {
         Ok(content) => {
             if let Err(e) = std::fs::write(&path, content) {
-                log::debug!("Failed to save resume data: {e}");
+                debug_log!("Failed to save resume data: {e}");
             }
         }
         Err(e) => {
-            log::debug!("Failed to serialize resume data: {e}");
+            debug_log!("Failed to serialize resume data: {e}");
         }
     }
 }

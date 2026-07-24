@@ -3,7 +3,7 @@
 //! Provides functions for detecting terminal capabilities (Sixel, Kitty, WezTerm)
 //! and handling keyboard/mouse input.
 
-use std::io::{self, Read, Write};
+use std::io::{self, Write};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
@@ -116,153 +116,64 @@ pub enum InputEvent {
     None,
 }
 
-/// Read a single byte from stdin with timeout.
-fn read_byte_with_timeout(timeout_ms: u64) -> Option<u8> {
-    let mut buf = [0u8; 1];
-    let mut stdin = io::stdin();
-
-    // Use polling approach with a short sleep
-    let start = std::time::Instant::now();
-    while start.elapsed().as_millis() < timeout_ms as u128 {
-        if stdin.read(&mut buf).ok()? > 0 {
-            return Some(buf[0]);
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    None
-}
-
 /// Read input from the terminal with optional timeout.
 ///
 /// Returns an InputEvent. If timeout_ms is Some, returns InputEvent::None on timeout.
 /// If timeout_ms is None, blocks indefinitely.
 pub fn read_input(timeout_ms: Option<u64>) -> InputEvent {
-    let mut buf = [0u8; 1];
-    let mut stdin = io::stdin();
+    use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
-    // Set stdin to non-blocking if timeout is specified
-    if let Some(timeout) = timeout_ms {
-        let start = std::time::Instant::now();
-        loop {
-            if stdin.read(&mut buf).is_ok() && buf[0] != 0 {
-                break;
-            }
-            if start.elapsed().as_millis() > timeout as u128 {
-                return InputEvent::None;
-            }
-            std::thread::sleep(Duration::from_millis(5));
+    // Use crossterm's event polling
+    let event = if let Some(timeout) = timeout_ms {
+        if event::poll(Duration::from_millis(timeout)).unwrap_or(false) {
+            event::read().ok()
+        } else {
+            None
         }
     } else {
         // Blocking read
-        if stdin.read(&mut buf).is_err() || buf[0] == 0 {
-            return InputEvent::None;
-        }
-    }
-
-    let ch = buf[0];
-
-    // Ctrl+C
-    if ch == 0x03 {
-        std::process::exit(0);
-    }
-
-    // Escape sequences
-    if ch == 0x1b {
-        return parse_escape_sequence();
-    }
-
-    // Enter
-    if ch == b'\r' || ch == b'\n' {
-        return InputEvent::Enter;
-    }
-
-    // Regular character
-    if ch.is_ascii() {
-        return InputEvent::Char(ch as char);
-    }
-
-    InputEvent::None
-}
-
-/// Parse escape sequences for arrow keys, mouse events, etc.
-fn parse_escape_sequence() -> InputEvent {
-    // Read the next byte after ESC
-    let Some(next) = read_byte_with_timeout(100) else {
-        return InputEvent::Escape;
+        event::read().ok()
     };
 
-    // CSI sequences: ESC [
-    if next == b'[' {
-        let mut seq = Vec::new();
-        loop {
-            let Some(b) = read_byte_with_timeout(50) else {
-                break;
-            };
-            seq.push(b);
-            // Terminal characters: letters or ~
-            if b.is_ascii_alphabetic() || b == b'~' {
-                break;
-            }
-        }
-
-        if seq.is_empty() {
-            return InputEvent::Escape;
-        }
-
-        let seq_str = String::from_utf8_lossy(&seq);
-
-        // Arrow keys
-        if seq_str == "A" {
-            return InputEvent::Up;
-        }
-        if seq_str == "B" {
-            return InputEvent::Down;
-        }
-        if seq_str == "C" {
-            return InputEvent::Right;
-        }
-        if seq_str == "D" {
-            return InputEvent::Left;
-        }
-
-        // Shift + Arrow: [1;2D, [1;2C
-        if seq_str == "1;2D" {
-            return InputEvent::ShiftLeft;
-        }
-        if seq_str == "1;2C" {
-            return InputEvent::ShiftRight;
-        }
-
-        // SGR mouse: [<Cb;Cx;CyM or m
-        if seq_str.starts_with('<') && (seq.last() == Some(&b'M') || seq.last() == Some(&b'm')) {
-            let body = &seq_str[1..seq_str.len() - 1]; // Remove '<' and 'M/m'
-            let parts: Vec<&str> = body.split(';').collect();
-            if parts.len() == 3 {
-                if let (Ok(btn_code), Ok(_mx), Ok(_my)) =
-                    (parts[0].parse::<u32>(), parts[1].parse::<u32>(), parts[2].parse::<u32>())
-                {
-                    let is_motion = btn_code & 32 != 0;
-                    if !is_motion {
-                        let btn = btn_code & 3;
-                        let pressed = seq.last() == Some(&b'M');
-                        if pressed {
-                            return match btn {
-                                0 => InputEvent::MouseLeft,
-                                2 => InputEvent::MouseRight,
-                                1 => InputEvent::MouseMiddle,
-                                _ => InputEvent::None,
-                            };
-                        }
+    match event {
+        Some(Event::Key(key_event)) if key_event.kind == KeyEventKind::Press => {
+            match key_event.code {
+                KeyCode::Char('c') if key_event.modifiers == KeyModifiers::CONTROL => {
+                    std::process::exit(0);
+                }
+                KeyCode::Char(ch) => InputEvent::Char(ch),
+                KeyCode::Enter => InputEvent::Enter,
+                KeyCode::Esc => InputEvent::Escape,
+                KeyCode::Left => {
+                    if key_event.modifiers == KeyModifiers::SHIFT {
+                        InputEvent::ShiftLeft
+                    } else {
+                        InputEvent::Left
                     }
                 }
+                KeyCode::Right => {
+                    if key_event.modifiers == KeyModifiers::SHIFT {
+                        InputEvent::ShiftRight
+                    } else {
+                        InputEvent::Right
+                    }
+                }
+                KeyCode::Up => InputEvent::Up,
+                KeyCode::Down => InputEvent::Down,
+                _ => InputEvent::None,
             }
         }
-
-        return InputEvent::Escape;
+        Some(Event::Mouse(mouse_event)) => match mouse_event.kind {
+            MouseEventKind::Down(btn) => match btn {
+                crossterm::event::MouseButton::Left => InputEvent::MouseLeft,
+                crossterm::event::MouseButton::Right => InputEvent::MouseRight,
+                crossterm::event::MouseButton::Middle => InputEvent::MouseMiddle,
+            },
+            _ => InputEvent::None,
+        },
+        Some(Event::Resize(_, _)) => InputEvent::Resize,
+        _ => InputEvent::None,
     }
-
-    // Alt+key or other sequences
-    InputEvent::Escape
 }
 
 /// Enable mouse reporting (SGR mode).
@@ -356,6 +267,7 @@ fn truncate_by_width(text: &str, max_width: usize) -> String {
 
 /// Initialize terminal for raw input mode.
 pub fn init_terminal() -> io::Result<()> {
+    crossterm::terminal::enable_raw_mode()?;
     enable_mouse()?;
     hide_cursor()?;
     Ok(())
@@ -365,6 +277,7 @@ pub fn init_terminal() -> io::Result<()> {
 pub fn restore_terminal() -> io::Result<()> {
     disable_mouse()?;
     show_cursor()?;
+    crossterm::terminal::disable_raw_mode()?;
     Ok(())
 }
 
