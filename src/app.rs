@@ -166,10 +166,13 @@ fn run_app(
 
     // Start at the specified directory, not the first sibling.
     // This runs AFTER resume so that an explicit directory choice overrides history.
+    // Only reset to page 0 if the user specified a different directory than the resume.
     if !is_archive {
         if let Some(pos) = dirs_to_browse.iter().position(|d| d == initial_dir) {
-            dir_idx = pos;
-            img_idx = 0;
+            if pos != dir_idx {
+                dir_idx = pos;
+                img_idx = 0;
+            }
         }
     }
 
@@ -449,12 +452,38 @@ fn run_app(
                 || key == terminal::InputKey::Char('Q')
                 || key == terminal::InputKey::Char('h')
             {
+                // Save resume state before quitting
+                if let Some(key) = resume_key {
+                    resume::save_resume_state(
+                        key,
+                        target_dir,
+                        &images,
+                        img_idx,
+                        is_archive,
+                        archive_resume_base.as_deref(),
+                        cover_mode,
+                        reading_mode,
+                    );
+                }
                 return Ok(());
             } else if key == terminal::InputKey::MouseLeft {
                 action = Some("next");
             } else if key == terminal::InputKey::MouseRight {
                 action = Some("prev");
             } else if key == terminal::InputKey::MouseMiddle {
+                // Save resume state before quitting
+                if let Some(key) = resume_key {
+                    resume::save_resume_state(
+                        key,
+                        target_dir,
+                        &images,
+                        img_idx,
+                        is_archive,
+                        archive_resume_base.as_deref(),
+                        cover_mode,
+                        reading_mode,
+                    );
+                }
                 return Ok(());
             } else if key == terminal::InputKey::Escape {
                 // ESC sequence - handled by terminal module

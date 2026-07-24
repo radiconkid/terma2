@@ -301,7 +301,7 @@ impl SixelRenderer {
         let right_aspect = img_left.map(|p| crate::image::get_image_aspect(p)).unwrap_or(0.0);
 
         // Each page gets half the width
-        let half_cols = std::cmp::max(1, term_width.saturating_sub(2) / 2);
+        let half_cols = std::cmp::max(1, term_width / 2);
 
         // Calculate heights based on each page's aspect ratio
         let left_height = std::cmp::max(1, (half_cols as f64 / (left_aspect * cell_ratio)) as usize);

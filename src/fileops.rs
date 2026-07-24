@@ -6,14 +6,98 @@
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
 
+/// Check if a character is a kanji numeral (一, 二, ..., 十, 百, 千, 万, 億, 零, 〇).
+fn is_kanji_numeral_char(c: char) -> bool {
+    matches!(
+        c,
+        '零' | '〇' | '一' | '二' | '三' | '四' | '五' | '六' | '七' | '八' | '九'
+            | '十' | '百' | '千' | '万' | '億'
+    )
+}
+
+/// Get the numeric value of a kanji numeral character.
+fn kanji_char_value(c: char) -> Option<u64> {
+    match c {
+        '零' | '〇' => Some(0),
+        '一' => Some(1),
+        '二' => Some(2),
+        '三' => Some(3),
+        '四' => Some(4),
+        '五' => Some(5),
+        '六' => Some(6),
+        '七' => Some(7),
+        '八' => Some(8),
+        '九' => Some(9),
+        '十' => Some(10),
+        '百' => Some(100),
+        '千' => Some(1000),
+        '万' => Some(10000),
+        '億' => Some(100000000),
+        _ => None,
+    }
+}
+
+/// Convert a kanji numeral string (e.g., "二十三", "百六十") to an integer.
+/// Returns None if the string is not a valid kanji numeral.
+fn kanji_numeral_to_int(s: &str) -> Option<u64> {
+    if s.is_empty() {
+        return None;
+    }
+
+    // Check if all characters are kanji numerals
+    if !s.chars().all(|c| is_kanji_numeral_char(c)) {
+        return None;
+    }
+
+    let mut total: u64 = 0;
+    let mut current: u64 = 0; // accumulated value for current group (below 万)
+    let mut temp: u64 = 0; // temporary value being built (digit * multiplier)
+    let mut digit: u64 = 0; // last seen digit
+
+    for ch in s.chars() {
+        let v = kanji_char_value(ch)?;
+
+        if v >= 10000 {
+            // 万, 億 - large unit, finalizes current group
+            current += std::cmp::max(temp, std::cmp::max(digit, 1));
+            temp = 0;
+            digit = 0;
+            total += current * v;
+            current = 0;
+        } else if v >= 10 {
+            // 十, 百, 千 - multiplier
+            temp += std::cmp::max(digit, 1) * v;
+            digit = 0;
+        } else {
+            // 一-九 - digit
+            if temp > 0 || digit > 0 {
+                current += temp;
+                temp = 0;
+            }
+            digit = v;
+        }
+    }
+
+    // Finalize remaining values
+    current += temp + digit;
+    total += current;
+
+    Some(total)
+}
+
 /// Natural sort key function (e.g., "page2" < "page10").
+///
+/// Supports:
+/// - ASCII digits (0-9)
+/// - Full-width digits (０-９)
+/// - Kanji numerals (一, 二, ..., 十, 百, 千, 万, 億)
 pub fn natural_sort_key(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut prev_is_digit = false;
 
     for ch in s.chars() {
-        let is_digit = ch.is_ascii_digit();
+        let is_digit = ch.is_numeric() || is_kanji_numeral_char(ch);
         if is_digit != prev_is_digit && !current.is_empty() {
             parts.push(current.clone());
             current.clear();
@@ -29,8 +113,28 @@ pub fn natural_sort_key(s: &str) -> Vec<String> {
     parts
         .into_iter()
         .map(|p| {
-            if p.chars().all(|c| c.is_ascii_digit()) {
-                format!("{:0>20}", p) // zero-pad for numeric comparison
+            if p.chars().all(|c| c.is_numeric()) {
+                // Full-width digits (０-９) - convert to ASCII for zero-padding
+                let ascii_digits: String = p
+                    .chars()
+                    .map(|c| match c {
+                        '０' => '0',
+                        '１' => '1',
+                        '２' => '2',
+                        '３' => '3',
+                        '４' => '4',
+                        '５' => '5',
+                        '６' => '6',
+                        '７' => '7',
+                        '８' => '8',
+                        '９' => '9',
+                        _ => c,
+                    })
+                    .collect();
+                format!("{:0>20}", ascii_digits) // zero-pad for numeric comparison
+            } else if let Some(num) = kanji_numeral_to_int(&p) {
+                // Kanji numerals - convert to integer and zero-pad
+                format!("{:0>20}", num)
             } else {
                 p.to_lowercase()
             }
