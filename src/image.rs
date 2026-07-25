@@ -82,18 +82,27 @@ pub fn get_cell_pixel_size() -> Option<(f64, f64)> {
 #[cfg(windows)]
 pub fn get_cell_pixel_size() -> Option<(f64, f64)> {
     use crossterm::terminal::window_size;
+
+    // crosstermのwindow_size()を信用する
     if let Ok(size) = window_size() {
         let cols = size.columns;
         let rows = size.rows;
         let width = size.width;
         let height = size.height;
+        
         if cols > 0 && rows > 0 && width > 0 && height > 0 {
             let cell_w = f64::from(width) / f64::from(cols);
             let cell_h = f64::from(height) / f64::from(rows);
-            return Some((cell_w, cell_h));
+            
+            // 値が異常でないことを確認
+            if cell_w >= 4.0 && cell_w <= 20.0 && cell_h >= 8.0 && cell_h <= 40.0 {
+                return Some((cell_w, cell_h));
+            }
         }
     }
-    None
+    
+    // フォールバック：Windows Terminalのデフォルト（8x16）
+    Some((8.0, 16.0))
 }
 
 /// Get the terminal's cell pixel size (stub for other non-Unix platforms).
