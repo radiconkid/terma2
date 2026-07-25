@@ -20,7 +20,7 @@ use anyhow::Result;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-const VERSION: &str = "1.0.2";
+const VERSION: &str = "1.0.4";
 const TURBO_STEP: usize = 10;
 
 /// Simple debug logger that writes to stderr when TERMA_DEBUG is set.
