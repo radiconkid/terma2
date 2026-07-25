@@ -78,8 +78,26 @@ pub fn get_cell_pixel_size() -> Option<(f64, f64)> {
     None
 }
 
-/// Get the terminal's cell pixel size (stub for non-Unix platforms).
-#[cfg(not(unix))]
+/// Get the terminal's cell pixel size on Windows using crossterm.
+#[cfg(windows)]
+pub fn get_cell_pixel_size() -> Option<(f64, f64)> {
+    use crossterm::terminal::window_size;
+    if let Ok(size) = window_size() {
+        let cols = size.columns;
+        let rows = size.rows;
+        let width = size.width;
+        let height = size.height;
+        if cols > 0 && rows > 0 && width > 0 && height > 0 {
+            let cell_w = f64::from(width) / f64::from(cols);
+            let cell_h = f64::from(height) / f64::from(rows);
+            return Some((cell_w, cell_h));
+        }
+    }
+    None
+}
+
+/// Get the terminal's cell pixel size (stub for other non-Unix platforms).
+#[cfg(not(any(unix, windows)))]
 pub fn get_cell_pixel_size() -> Option<(f64, f64)> {
     None
 }
