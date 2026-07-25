@@ -77,17 +77,17 @@ fn is_sixel_terminal() -> bool {
         return true;
     }
 
-    // Check if chafa is available as a fallback
-    if which::which("chafa").is_ok() {
+    // Check if chafa library is available (always true if compiled with chafa-sys)
+    if crate::chafa_render::ChafaCanvas::is_available() {
         return true;
     }
 
     false
 }
 
-/// Check if chafa is installed and usable.
+/// Check if chafa library is usable.
 pub fn is_chafa_usable() -> bool {
-    which::which("chafa").is_ok()
+    crate::chafa_render::ChafaCanvas::is_available()
 }
 
 /// Input key types (alias for app.rs compatibility)

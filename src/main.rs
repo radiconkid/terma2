@@ -9,6 +9,7 @@
 //! - Mouse support (SGR mode)
 
 mod app;
+mod chafa_render;
 mod display;
 mod fileops;
 mod image;

@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::chafa_render::{self, PixelMode};
 use crate::debug_log;
 use crate::terminal;
 
@@ -73,48 +74,29 @@ impl SixelRenderer {
         let _ = stdout.flush();
     }
 
-    /// Convert an image to Sixel/Kitty data using chafa.
-    fn sixel_convert(&self, image_path: &Path, cols: usize, rows: usize) -> Option<Vec<u8>> {
+    /// Convert an image to Sixel/Kitty data using the chafa library.
+    /// Returns the data and the actual output dimensions (cols, rows).
+    fn sixel_convert(&self, image_path: &Path, cols: usize, rows: usize) -> Option<(Vec<u8>, (u32, u32))> {
         if !self.use_chafa {
             return None;
         }
 
-        let fmt = if self.is_kitty { "kitty" } else { "sixels" };
+        let pixel_mode = if self.is_kitty {
+            PixelMode::Kitty
+        } else {
+            PixelMode::Sixels
+        };
 
-        let result = Command::new("chafa")
-            .args([
-                "-f",
-                fmt,
-                "--size",
-                &format!("{}x{}", cols, rows),
-                "--symbols",
-                "all",
-                "--optimize",
-                "0",
-                &image_path.to_string_lossy(),
-            ])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output();
-
-        match result {
-            Ok(output) => {
-                if output.status.success() && !output.stdout.is_empty() {
-                    Some(output.stdout)
-                } else {
-                    debug_log!(
-                        "chafa failed: rc={}, stderr={:?}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stderr[..200.min(output.stderr.len())])
-                    );
-                    None
-                }
-            }
-            Err(e) => {
-                debug_log!("chafa error: {e}");
-                None
-            }
-        }
+        let (cell_w, cell_h) = crate::image::get_cell_pixel_size()
+            .unwrap_or((8.0, 16.0));
+        chafa_render::convert_image(
+            image_path,
+            cols as u32,
+            rows as u32,
+            cell_w as u32,
+            cell_h as u32,
+            pixel_mode,
+        )
     }
 
     /// Fallback display using Kitty icat or WezTerm imgcat.
@@ -245,8 +227,8 @@ impl SixelRenderer {
         }
 
         if self.use_chafa {
-            if let Some(data) = self.sixel_convert(image_path, display_cols, img_height) {
-                self.center_cursor(display_cols, term_width);
+            if let Some((data, (out_w, _))) = self.sixel_convert(image_path, display_cols, img_height) {
+                self.center_cursor(out_w as usize, term_width);
                 self.output_sixel(&data);
                 return;
             }
@@ -261,8 +243,8 @@ impl SixelRenderer {
             return;
         }
 
-        if let Some(data) = self.sixel_convert(image_path, display_cols, img_height) {
-            self.center_cursor(display_cols, term_width);
+        if let Some((data, (out_w, _))) = self.sixel_convert(image_path, display_cols, img_height) {
+            self.center_cursor(out_w as usize, term_width);
             self.output_sixel(&data);
         } else {
             debug_log!("Sixel conversion failed, trying fallback display");
@@ -324,19 +306,19 @@ impl SixelRenderer {
                     let _ = stdout.flush();
 
                     if self.use_chafa {
-                        if let Some(data) = self.sixel_convert(combined_path, display_cols, img_height)
+                        if let Some((data, (out_w, _))) = self.sixel_convert(combined_path, display_cols, img_height)
                         {
-                            self.center_cursor(display_cols, term_width);
+                            self.center_cursor(out_w as usize, term_width);
                             self.output_sixel(&data);
                         } else if self.is_kitty || self.is_wezterm {
                             self.fallback_display(combined_path, display_cols, img_height);
                         }
                     } else if self.is_kitty || self.is_wezterm {
                         self.fallback_display(combined_path, display_cols, img_height);
-                    } else if let Some(data) =
+                    } else if let Some((data, (out_w, _))) =
                         self.sixel_convert(combined_path, display_cols, img_height)
                     {
-                        self.center_cursor(display_cols, term_width);
+                        self.center_cursor(out_w as usize, term_width);
                         self.output_sixel(&data);
                     }
 

@@ -43,7 +43,7 @@ terminal_size = "0.4"
 # libc for TIOCGWINSZ ioctl
 libc = "0.2"
 
-# which for finding chafa binary
+# which for finding unrar/7z binaries
 which = "7"
 
 # dirs for home directory
@@ -57,6 +57,9 @@ flate2 = "1"
 base64 = "0.22"
 crc32fast = "1"
 regex-lite = "0.1"
+
+# Chafa library bindings (replaces external chafa binary)
+chafa-sys = "0.1.4"
 
 [profile.release]
 opt-level = 2
