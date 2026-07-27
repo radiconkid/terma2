@@ -251,6 +251,12 @@ fn run_app(
         let mut dir_changed = false;
         let target_dir = &dirs_to_browse[dir_idx];
 
+        // Click detection: column ranges for each toggle label and the status row
+        let mut cover_label_cols: std::ops::Range<usize> = 0..0;
+        let mut single_label_cols: std::ops::Range<usize> = 0..0;
+        let mut mode_label_cols: std::ops::Range<usize> = 0..0;
+        let mut status_row: usize = 0;
+
         // Update last opened folder whenever the directory changes
         if let Ok(canon) = target_dir.canonicalize() {
             resume::set_last_opened_folder(&canon.to_string_lossy());
@@ -281,7 +287,7 @@ fn run_app(
                     None
                 };
 
-                // Build status line
+                // Build status line: buttons first (left-aligned), then DIR info
                 let dir_name = if is_archive {
                     archive_name.map(|n| n.to_string()).unwrap_or_default()
                 } else {
@@ -290,9 +296,9 @@ fn run_app(
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default()
                 };
-                let status = if cover_mode && img_idx == 0 {
+                let file_info = if cover_mode && img_idx == 0 {
                     format!(
-                        "DIR: {dir_name} | Cover: {}",
+                        "Cover: {}",
                         curr_right
                             .file_name()
                             .map(|n| n.to_string_lossy())
@@ -300,7 +306,7 @@ fn run_app(
                     )
                 } else if use_single {
                     format!(
-                        "DIR: {dir_name} | Single: {}",
+                        "Single: {}",
                         curr_right
                             .file_name()
                             .map(|n| n.to_string_lossy())
@@ -311,7 +317,7 @@ fn run_app(
                         .and_then(|p| p.file_name().map(|n| n.to_string_lossy()))
                         .unwrap_or_default();
                     format!(
-                        "DIR: {dir_name} | R: {} L: {l_name}",
+                        "R: {} L: {l_name}",
                         curr_right
                             .file_name()
                             .map(|n| n.to_string_lossy())
@@ -319,18 +325,21 @@ fn run_app(
                     )
                 };
 
-                let mut status = status;
-                if !cover_mode {
-                    status += " [NoCover]";
-                }
-                if force_single {
-                    status += " [Single]";
-                }
-                if reading_mode {
-                    status += " [Manga]";
-                } else {
-                    status += " [Comic]";
-                }
+                let mut status = String::new();
+
+                let start = status.chars().count();
+                status += if cover_mode { " [Cover]" } else { " [NoCover]" };
+                cover_label_cols = start..status.chars().count();
+
+                let start = status.chars().count();
+                status += if force_single { " [Single]" } else { " [Multi]" };
+                single_label_cols = start..status.chars().count();
+
+                let start = status.chars().count();
+                status += if reading_mode { " [Manga]" } else { " [Comic]" };
+                mode_label_cols = start..status.chars().count();
+
+                status += &format!(" | DIR: {dir_name} | {file_info}");
 
                 // Save resume state per-directory
                 if let Ok(canon) = target_dir.canonicalize() {
@@ -368,16 +377,13 @@ fn run_app(
                 }
 
                 // Draw status line
-                let _ = terminal::draw_status(
-                    h,
-                    w,
-                    &status,
-                    if renderer.is_kitty || renderer.is_wezterm {
-                        1
-                    } else {
-                        0
-                    },
-                );
+                let status_offset = if renderer.is_kitty || renderer.is_wezterm {
+                    1
+                } else {
+                    0
+                };
+                status_row = h.saturating_sub(1 + status_offset);
+                let _ = terminal::draw_status(h, w, &status, status_offset);
 
                 needs_redraw = false;
             }
@@ -532,7 +538,19 @@ fn run_app(
                 return Ok(());
             } else if let terminal::InputKey::MouseLeft(row, col) = key {
                 let (h, w) = terminal::get_terminal_size();
-                if terminal::is_mouse_in_image_area(row, col, h as u16, w as u16) {
+                let col_usize = col as usize;
+
+                if row as usize == status_row && cover_label_cols.contains(&col_usize) {
+                    cover_mode = !cover_mode;
+                    img_idx = 0;
+                    needs_redraw = true;
+                } else if row as usize == status_row && single_label_cols.contains(&col_usize) {
+                    force_single = !force_single;
+                    needs_redraw = true;
+                } else if row as usize == status_row && mode_label_cols.contains(&col_usize) {
+                    reading_mode = !reading_mode;
+                    needs_redraw = true;
+                } else if terminal::is_mouse_in_image_area(row, col, h as u16, w as u16) {
                     action = Some("next");
                 }
             } else if let terminal::InputKey::MouseRight(row, col) = key {
