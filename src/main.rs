@@ -69,7 +69,22 @@ fn main() -> Result<()> {
     let target_path = if args.len() > 1 {
         PathBuf::from(&args[1])
     } else {
-        std::env::current_dir()?
+        // No argument: try last opened folder from resume, fall back to current dir
+        if let Some(last_folder) = resume::get_last_opened_folder() {
+            let path = PathBuf::from(&last_folder);
+            if path.exists() {
+                debug_log!("Resume: using last opened folder: {:?}", last_folder);
+                path
+            } else {
+                debug_log!(
+                    "Resume: last opened folder {:?} no longer exists, using current dir",
+                    last_folder
+                );
+                std::env::current_dir()?
+            }
+        } else {
+            std::env::current_dir()?
+        }
     };
 
     app::run(target_path)?;

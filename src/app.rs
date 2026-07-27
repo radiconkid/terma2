@@ -14,6 +14,11 @@ use crate::terminal;
 
 /// Run the manga viewer application with the given target path.
 pub fn run(target_path: PathBuf) -> anyhow::Result<()> {
+    // Save the last opened folder for external tools (e.g. yazi plugin)
+    if let Some(canonical) = target_path.canonicalize().ok() {
+        resume::set_last_opened_folder(&canonical.to_string_lossy());
+    }
+
     let resume_key = target_path
         .canonicalize()
         .ok()
@@ -245,6 +250,12 @@ fn run_app(
         needs_redraw = true;
         let mut dir_changed = false;
         let target_dir = &dirs_to_browse[dir_idx];
+
+        // Update last opened folder whenever the directory changes
+        if let Ok(canon) = target_dir.canonicalize() {
+            resume::set_last_opened_folder(&canon.to_string_lossy());
+        }
+
         let images = fileops::get_sorted_images(target_dir);
 
         if images.is_empty() {
@@ -519,11 +530,17 @@ fn run_app(
                     );
                 }
                 return Ok(());
-            } else if key == terminal::InputKey::MouseLeft {
-                action = Some("next");
-            } else if key == terminal::InputKey::MouseRight {
-                action = Some("prev");
-            } else if key == terminal::InputKey::MouseMiddle {
+            } else if let terminal::InputKey::MouseLeft(row, col) = key {
+                let (h, w) = terminal::get_terminal_size();
+                if terminal::is_mouse_in_image_area(row, col, h as u16, w as u16) {
+                    action = Some("next");
+                }
+            } else if let terminal::InputKey::MouseRight(row, col) = key {
+                let (h, w) = terminal::get_terminal_size();
+                if terminal::is_mouse_in_image_area(row, col, h as u16, w as u16) {
+                    action = Some("prev");
+                }
+            } else if let terminal::InputKey::MouseMiddle(_, _) = key {
                 // Save resume state before quitting
                 if let Some(key) = resume_key {
                     resume::save_resume_state(

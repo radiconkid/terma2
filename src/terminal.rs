@@ -110,14 +110,34 @@ pub enum InputEvent {
     Enter,
     /// Escape key
     Escape,
-    /// Mouse events
-    MouseLeft,
-    MouseRight,
-    MouseMiddle,
+    /// Mouse events with (row, col) coordinates (1-based)
+    MouseLeft(u16, u16),
+    MouseRight(u16, u16),
+    MouseMiddle(u16, u16),
     /// Resize event
     Resize,
     /// No input (timeout)
     None,
+}
+
+/// Margin in character cells around the terminal edges where mouse clicks are ignored.
+/// This prevents accidental page turns when clicking near the edges.
+pub const MOUSE_MARGIN: u16 = 2;
+
+/// Check if a mouse click at (row, col) is within the valid image display area.
+///
+/// The valid area excludes:
+/// - `MOUSE_MARGIN` cells from each edge
+/// - The bottom 2 rows (reserved for status bar)
+///
+/// Returns `true` if the click is within bounds.
+pub fn is_mouse_in_image_area(row: u16, col: u16, term_rows: u16, term_cols: u16) -> bool {
+    let top = MOUSE_MARGIN + 1; // 1-based, skip top margin
+    let bottom = term_rows.saturating_sub(MOUSE_MARGIN + 2); // reserve 2 rows for status
+    let left = MOUSE_MARGIN + 1;
+    let right = term_cols.saturating_sub(MOUSE_MARGIN);
+
+    row >= top && row <= bottom && col >= left && col <= right
 }
 
 /// Read input from the terminal with optional timeout.
@@ -169,9 +189,15 @@ pub fn read_input(timeout_ms: Option<u64>) -> InputEvent {
         }
         Some(Event::Mouse(mouse_event)) => match mouse_event.kind {
             MouseEventKind::Down(btn) => match btn {
-                crossterm::event::MouseButton::Left => InputEvent::MouseLeft,
-                crossterm::event::MouseButton::Right => InputEvent::MouseRight,
-                crossterm::event::MouseButton::Middle => InputEvent::MouseMiddle,
+                crossterm::event::MouseButton::Left => {
+                    InputEvent::MouseLeft(mouse_event.row, mouse_event.column)
+                }
+                crossterm::event::MouseButton::Right => {
+                    InputEvent::MouseRight(mouse_event.row, mouse_event.column)
+                }
+                crossterm::event::MouseButton::Middle => {
+                    InputEvent::MouseMiddle(mouse_event.row, mouse_event.column)
+                }
             },
             _ => InputEvent::None,
         },

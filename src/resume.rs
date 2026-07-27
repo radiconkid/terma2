@@ -4,6 +4,7 @@
 //! to/from a JSON file (~/.terma_resume.json).
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::debug_log;
@@ -37,23 +38,23 @@ fn resume_file_path() -> PathBuf {
 }
 
 /// Load all resume data from the JSON file.
-fn load_resume_data() -> std::collections::HashMap<String, ResumeState> {
+fn load_resume_data() -> HashMap<String, ResumeState> {
     let path = resume_file_path();
     if path.exists() {
         match std::fs::read_to_string(&path) {
             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
             Err(e) => {
                 debug_log!("Failed to load resume data: {e}");
-                std::collections::HashMap::new()
+                HashMap::new()
             }
         }
     } else {
-        std::collections::HashMap::new()
+        HashMap::new()
     }
 }
 
 /// Save all resume data to the JSON file.
-fn save_resume_data(data: &std::collections::HashMap<String, ResumeState>) {
+fn save_resume_data(data: &HashMap<String, ResumeState>) {
     let path = resume_file_path();
     match serde_json::to_string_pretty(data) {
         Ok(content) => {
@@ -186,4 +187,49 @@ pub fn find_resume_image_index(images: &[PathBuf], state: &ResumeState) -> usize
         }
     }
     state.image_index.min(images.len().saturating_sub(1))
+}
+
+/// --- Last opened folder (for external tools like yazi plugin) ---
+
+/// Path to the last opened folder file (~/.terma_last_folder).
+fn last_folder_file_path() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".terma_last_folder")
+}
+
+/// Get the last opened folder path.
+///
+/// This is a simple text file containing just the path to the last opened folder.
+/// Useful for external tools (e.g. yazi plugin) to know which folder was last viewed.
+pub fn get_last_opened_folder() -> Option<String> {
+    let path = last_folder_file_path();
+    if path.exists() {
+        match std::fs::read_to_string(&path) {
+            Ok(content) => {
+                let trimmed = content.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            }
+            Err(e) => {
+                debug_log!("Failed to read last folder: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    }
+}
+
+/// Set the last opened folder path.
+///
+/// Writes the path to a simple text file for external tools to read.
+pub fn set_last_opened_folder(path: &str) {
+    let file_path = last_folder_file_path();
+    if let Err(e) = std::fs::write(&file_path, path) {
+        debug_log!("Failed to write last folder: {e}");
+    }
 }
