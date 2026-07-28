@@ -255,6 +255,8 @@ fn run_app(
         let mut cover_label_cols: std::ops::Range<usize> = 0..0;
         let mut single_label_cols: std::ops::Range<usize> = 0..0;
         let mut mode_label_cols: std::ops::Range<usize> = 0..0;
+        let mut prev_chapter_cols: std::ops::Range<usize> = 0..0;
+        let mut next_chapter_cols: std::ops::Range<usize> = 0..0;
         let mut status_row: usize = 0;
 
         // Update last opened folder whenever the directory changes
@@ -338,6 +340,14 @@ fn run_app(
                 let start = status.chars().count();
                 status += if reading_mode { " [Manga]" } else { " [Comic]" };
                 mode_label_cols = start..status.chars().count();
+
+                let start = status.chars().count();
+                status += " [<前話]";
+                prev_chapter_cols = start..status.chars().count();
+
+                let start = status.chars().count();
+                status += "[次話>]";
+                next_chapter_cols = start..status.chars().count();
 
                 status += &format!(" | DIR: {dir_name} | {file_info}");
 
@@ -550,6 +560,22 @@ fn run_app(
                 } else if row as usize == status_row && mode_label_cols.contains(&col_usize) {
                     reading_mode = !reading_mode;
                     needs_redraw = true;
+                } else if row as usize == status_row && next_chapter_cols.contains(&col_usize) {
+                    // 「,」キーと同じ: 次のディレクトリ(章)へ
+                    if dir_idx + 1 < dirs_to_browse.len() {
+                        dir_idx += 1;
+                        img_idx = 0;
+                        dir_changed = true;
+                        break;
+                    }
+                } else if row as usize == status_row && prev_chapter_cols.contains(&col_usize) {
+                    // 「.」キーと同じ: 前のディレクトリ(章)へ
+                    if dir_idx > 0 {
+                        dir_idx -= 1;
+                        img_idx = 0;
+                        dir_changed = true;
+                        break;
+                    }
                 } else if terminal::is_mouse_in_image_area(row, col, h as u16, w as u16) {
                     action = Some("next");
                 }
