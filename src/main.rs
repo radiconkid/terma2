@@ -67,7 +67,23 @@ fn main() -> Result<()> {
     }
 
     let target_path = if args.len() > 1 {
-        PathBuf::from(&args[1])
+        let raw_path = &args[1];
+        // Expand tilde (~) to home directory
+        if raw_path.starts_with('~') {
+            if let Some(home) = dirs::home_dir() {
+                if raw_path == "~" {
+                    home
+                } else {
+                    // ~/path → /home/user/path
+                    let without_tilde = raw_path.strip_prefix("~/").unwrap_or("");
+                    home.join(without_tilde)
+                }
+            } else {
+                PathBuf::from(raw_path)
+            }
+        } else {
+            PathBuf::from(raw_path)
+        }
     } else {
         // No argument: try last opened folder from resume, fall back to current dir
         if let Some(last_folder) = resume::get_last_opened_folder() {
