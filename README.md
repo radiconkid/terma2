@@ -1,4 +1,4 @@
-![Version](https://img.shields.io/badge/version-v1.0.4-blue.svg)
+![Version](https://img.shields.io/badge/version-v1.0.5-blue.svg)
 # TerMa (terma2)
 
 > **Ter**minal **Ma**nga Viewer — *"タマ"*
