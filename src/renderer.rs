@@ -80,6 +80,8 @@ impl SixelRenderer {
         }
 
         let fmt = if self.is_kitty { "kitty" } else { "sixels" };
+        let normalized_path = normalize_windows_path(image_path);
+        debug_log!("sixel_convert: normalized_path = {:?}", normalized_path);
 
         let result = Command::new("chafa")
             .args([
@@ -91,7 +93,7 @@ impl SixelRenderer {
                 "all",
                 "--optimize",
                 "0",
-                &image_path.to_string_lossy(),
+                &normalized_path.to_string_lossy(),
             ])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -141,6 +143,12 @@ impl SixelRenderer {
         }
 
         if self.is_wezterm {
+            // Try direct imgcat escape sequence first (works without wezterm CLI)
+            if self.display_via_imgcat_direct(image_path) {
+                debug_log!("Fallback: used direct imgcat protocol");
+                return true;
+            }
+            // Fall back to wezterm CLI command
             let result = Command::new("wezterm")
                 .args(["imgcat", &image_path.to_string_lossy()])
                 .stdout(Stdio::null())
@@ -156,6 +164,37 @@ impl SixelRenderer {
         }
 
         false
+    }
+
+    /// Display an image using the iTerm2/WezTerm imgcat escape sequence protocol directly.
+    ///
+    /// Reads the image file, encodes it as base64, and writes the escape sequence
+    /// to stdout. This works on any terminal that supports the protocol (WezTerm,
+    /// iTerm2, etc.) without requiring the `wezterm` CLI to be installed.
+    fn display_via_imgcat_direct(&self, image_path: &Path) -> bool {
+        let image_data = match std::fs::read(image_path) {
+            Ok(data) => data,
+            Err(e) => {
+                debug_log!("imgcat direct: failed to read image: {e}");
+                return false;
+            }
+        };
+
+        let b64_data = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            &image_data,
+        );
+        let size = image_data.len();
+
+        let mut stdout = std::io::stdout();
+        // Write imgcat escape sequence: OSC 1337 ; File = inline=1 ; size=SIZE : BASE64 ST
+        let _ = write!(
+            stdout,
+            "\x1b]1337;File=inline=1;size={size}:{b64_data}\x07",
+        );
+        let _ = stdout.flush();
+
+        true
     }
 
     /// Show a warning when no display method is available.
@@ -445,4 +484,16 @@ fn inject_kitty_z_index(data: &[u8], z: i32) -> Vec<u8> {
     result.extend_from_slice(new_params.as_bytes());
     result.extend_from_slice(&rest[param_end..]);
     result
+}
+
+
+fn normalize_windows_path(path: &Path) -> std::path::PathBuf {
+    let s = path.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        std::path::PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        std::path::PathBuf::from(rest)
+    } else {
+        path.to_path_buf()
+    }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "terma"
-version = "1.0.4"
+version = "1.0.5"
 edition = "2021"
 description = "Terminal Manga Viewer - A terminal-based manga/comic reader with image display support (Rust port)"
 authors = ["radiconkid"]
@@ -57,6 +57,8 @@ flate2 = "1"
 base64 = "0.22"
 crc32fast = "1"
 regex-lite = "0.1"
+
+dunce = "1"
 
 [profile.release]
 opt-level = 2
